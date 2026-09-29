@@ -58,7 +58,7 @@ def execute(
     slot_of = loaded.slot_of if loaded else _no_slot
     patterns = config.ignore_patterns(entries)
     reserved = slots.parse_reserved(config.last(entries, "reservedSlots"))
-    own = slot_of(target) if mode == "refresh" else None
+    own = slot_of(target)
     ctx = Context(
         main=repo.main,
         target=target,
@@ -98,8 +98,9 @@ def execute(
         ctx.options = values
         print(f"worktree-init: {mode} {target} (slot {ctx.slot}, source {ctx.source})", file=out)
         spec = include.include_file(ctx.source, repo.main)
+        overwrite = mode == "create" and own is None
         for rel in include.included(ctx.source, run_env, spec):
-            if ctx.copy(rel, overwrite=mode == "create"):
+            if ctx.copy(rel, overwrite=overwrite):
                 ctx.info(f"copied {rel}")
         if loaded:
             loaded.apply(ctx)

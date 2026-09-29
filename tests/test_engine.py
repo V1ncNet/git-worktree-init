@@ -94,6 +94,19 @@ def test_refresh_keeps_own_slot(configured):
     assert (target / ".env").read_text() == "SLOT=6\nPORT=8006\n"
 
 
+def test_create_on_prepared_worktree_keeps_slot_and_files(configured):
+    repo, target = configured
+    (repo / ".worktreeinclude").write_text("*.log\n")
+    (repo / "a.log").write_text("new")
+    (target / "a.log").write_text("old")
+    (target / ".env").write_text("SLOT=6\n")
+
+    engine.execute(target, "create", dict(os.environ), out=io.StringIO())
+
+    assert (target / ".env").read_text() == "SLOT=6\nPORT=8006\n"
+    assert (target / "a.log").read_text() == "old"
+
+
 def test_relative_source_is_rejected(configured):
     _, target = configured
 
@@ -124,6 +137,24 @@ def test_keyboard_interrupt_returns_130(configured, monkeypatch):
 
     assert code == 130
     assert "git wt refresh" in err.getvalue()
+
+
+def test_add_keyboard_interrupt_returns_130(configured, monkeypatch):
+    repo, _ = configured
+
+    real_run = cli.subprocess.run
+
+    def interrupted(command, *args, **kwargs):
+        if command[:3] == ["git", "worktree", "add"]:
+            raise KeyboardInterrupt
+        return real_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(cli.subprocess, "run", interrupted)
+    monkeypatch.chdir(repo)
+
+    code = cli.main(["add", "--", "../x"], env=dict(os.environ), out=io.StringIO(), err=io.StringIO())
+
+    assert code == 130
 
 
 def test_refresh_reports_setup_errors(configured, monkeypatch):

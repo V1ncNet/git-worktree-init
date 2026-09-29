@@ -154,4 +154,7 @@ def _add(argv: list[str], env: dict[str, str], err: TextIO) -> int:
     child = env | flag_env(options, args, cwd)
     if args.yes:
         child["WT_YES"] = "1"
-    return subprocess.run(["git", "worktree", "add", *forwarded], cwd=cwd, env=child).returncode
+    try:
+        return subprocess.run(["git", "worktree", "add", *forwarded], cwd=cwd, env=child).returncode
+    except KeyboardInterrupt:
+        return 130

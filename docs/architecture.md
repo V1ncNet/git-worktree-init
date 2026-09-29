@@ -34,7 +34,7 @@ flowchart TD
 4. The worktree path matches an `ignorePaths` pattern.
 5. Neither `worktree-init.plugin` is set nor the main worktree has a `.worktreeinclude`.
 
-An ordinary checkout or clone costs at most two `git rev-parse`. Only a new linked worktree adds another `rev-parse`, up to two `git config` and one `git worktree list`. Python starts only after all filters passed.
+An ordinary checkout or clone costs at most two `git rev-parse`. Only a new linked worktree adds another `rev-parse`, up to three `git config` and one `git worktree list`. Python starts only after all filters passed.
 
 ## `wti.py` instead of `python -m`
 
@@ -69,4 +69,6 @@ The prompt reads and writes the terminal, not stdin and stdout, which Git may ha
 - The hook itself has no flags. `git wt add` provides them.
 - The calling worktree cannot be detected, so the source is the main worktree unless given.
 - Prompts need a terminal.
-- The registration is global. For an ordinary checkout or clone the shim costs at most two `git rev-parse`.
+- The registration is global. The cost of the shim is described under "Shim filters".
+- All messages go to stderr.
+- `/dev/tty` is opened twice, once for reading and once for writing, because a single `r+` handle is not seekable on a terminal.

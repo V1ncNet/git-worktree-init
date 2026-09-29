@@ -17,10 +17,12 @@ Register the hook, an alias and the interpreter in a user-level config file that
 
 ```sh
 git config --file ~/.config/git/local hook.worktree-init.command <clone>/hook.sh
-git config --file ~/.config/git/local hook.worktree-init.event post-checkout
+git config --file ~/.config/git/local --add hook.worktree-init.event post-checkout
 git config --file ~/.config/git/local alias.wt '!<clone>/bin/git-wt'
-git config --file ~/.config/git/local worktree-init.python /usr/bin/python3
+git config --file ~/.config/git/local --type=path worktree-init.python "$(command -v python3)"
 ```
+
+The interpreter must be Python 3.12 or newer, so check that `python3` resolves to one, or pass the path of a suitable interpreter instead. The file `~/.config/git/local` takes effect only if the global config includes it, for example with `[include] path = ~/.config/git/local`. Use `--global` instead of `--file ~/.config/git/local` to skip the include.
 
 `core.hooksPath` is deliberately not used, because it switches off every hook in `.git/hooks`. Keep `hook.jobs` at 1 so hooks of the same event run one after another.
 
@@ -42,7 +44,7 @@ WT_SLOT=3 git worktree add -b feature/foo ../proj.foo
 git wt refresh ../proj.foo
 ```
 
-- `git worktree add` runs the hook and prompts for options when a terminal is available.
+- `git worktree add` runs the hook and prompts for options when a terminal is available. With `--no-checkout` Git does not run `post-checkout`, so initialize such a worktree with `git wt refresh`.
 - `git wt add [--yes] [--<option> ...] -- <git worktree add arguments>` turns the flags into `WT_*` variables for that one invocation and forwards everything after `--` to `git worktree add`. The exit code of `git worktree add` is returned, a usage error returns 2. Flags cannot be abbreviated.
 - `git -c worktree-init.<key>=<value>` and `WT_<NAME>` set an option without `git wt`.
 - `git wt refresh [--<option> ...] [<worktree>]` re-runs the preparation for an existing worktree, the current one by default. It keeps the existing slot and does not overwrite copied files that differ.
