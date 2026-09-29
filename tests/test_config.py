@@ -1,5 +1,8 @@
 import os
+import subprocess
 from pathlib import Path
+
+import pytest
 
 from git_worktree_init import config
 from helpers import git
@@ -32,3 +35,14 @@ def test_path_ignored_matches_directory_with_spaces():
 
     assert config.path_ignored(Path("/r/.claude/worktrees/my agent"), patterns)
     assert not config.path_ignored(Path("/r/wt"), patterns)
+
+
+def test_read_failure_is_raised(repo, monkeypatch):
+    monkeypatch.setattr(
+        config,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess([], 128, "", "boom"),
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        config.read(repo, os.environ)

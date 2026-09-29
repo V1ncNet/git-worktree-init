@@ -1,4 +1,7 @@
 import os
+import subprocess
+
+import pytest
 
 from git_worktree_init import include
 from helpers import git
@@ -62,3 +65,17 @@ def test_source_without_list_uses_main_list(repo):
 
     assert spec == repo / ".worktreeinclude"
     assert include.included(source, os.environ, spec) == [".env"]
+
+
+def test_check_ignore_failure_is_raised(repo, monkeypatch):
+    (repo / ".env").write_text("A=1")
+    (repo / ".worktreeinclude").write_text(".env\n")
+
+    monkeypatch.setattr(
+        include,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess([], 128, "", "boom"),
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        include.included(repo, os.environ)

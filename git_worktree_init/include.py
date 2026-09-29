@@ -59,4 +59,6 @@ def included(source: Path, env: Mapping[str, str], spec: Path | None = None) -> 
         check=False,
         input="\0".join(candidates) + "\0",
     )
+    if checked.returncode not in (0, 1):
+        raise RuntimeError(f"git check-ignore failed ({checked.returncode}): {checked.stderr.strip()}")
     return sorted(path for path in checked.stdout.split("\0") if path)

@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from pathlib import Path
 
-from git_worktree_init.gitenv import git
+from git_worktree_init.gitenv import run
 
 PREFIX = "worktree-init."
 DEFAULT_IGNORE_PATHS = ("*/.claude/worktrees/*",)
@@ -19,11 +19,16 @@ type Entries = dict[str, list[Entry]]
 
 
 def read(cwd: Path, env: Mapping[str, str]) -> Entries:
-    output = git(
-        cwd, "config", "--show-scope", "--get-regexp", r"^worktree-init\.", env=env, check=False
+    result = run(
+        ["git", "config", "--show-scope", "--get-regexp", r"^worktree-init\."],
+        cwd,
+        env,
+        check=False,
     )
+    if result.returncode not in (0, 1):
+        raise RuntimeError(f"git config failed ({result.returncode}): {result.stderr.strip()}")
     entries: Entries = {}
-    for line in output.splitlines():
+    for line in result.stdout.splitlines():
         scope, _, rest = line.partition("\t")
         key, _, value = rest.partition(" ")
         entries.setdefault(key[len(PREFIX):], []).append(Entry(scope, value))
