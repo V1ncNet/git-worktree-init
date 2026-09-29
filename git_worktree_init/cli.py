@@ -28,6 +28,8 @@ def main(
     command, rest = argv[0], list(argv[1:])
     if command == "hook":
         return _hook(env, out, err)
+    if command == "add":
+        return _add(rest, env, err)
     if command == "refresh":
         return _refresh(rest, env, out, err)
     err.write(USAGE)
@@ -129,3 +131,27 @@ def _refresh(argv: list[str], env: dict[str, str], out: TextIO, err: TextIO) -> 
         err.write(f"worktree-init: not a git worktree: {location}\n")
         return 2
     return _execute(target, "refresh", env | flag_env(options, args, cwd), out, err)
+
+
+def _add(argv: list[str], env: dict[str, str], err: TextIO) -> int:
+    cwd = Path.cwd()
+    if "--" in argv:
+        split = argv.index("--")
+        own, forwarded = argv[:split], argv[split + 1:]
+    else:
+        own, forwarded = argv, None
+    try:
+        options = declared(cwd, env)
+    except (plugins.PluginError, RuntimeError, subprocess.CalledProcessError) as error:
+        err.write(f"worktree-init: {error}\n")
+        return 2
+    args, code = _parse("git wt add", options, False, own)
+    if args is None:
+        return code
+    if forwarded is None:
+        err.write("usage: git wt add [options] -- <git worktree add arguments>\n")
+        return 2
+    child = env | flag_env(options, args, cwd)
+    if args.yes:
+        child["WT_YES"] = "1"
+    return subprocess.run(["git", "worktree", "add", *forwarded], cwd=cwd, env=child).returncode
