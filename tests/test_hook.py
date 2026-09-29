@@ -71,6 +71,7 @@ def test_checkout_clone_and_ignored_paths_do_nothing(repo, tmp_path):
     home = Path(os.environ["HOME"])
     git(home, "config", "--global", "hook.worktree-init.command", str(HOOK))
     git(home, "config", "--global", "--add", "hook.worktree-init.event", "post-checkout")
+    git(home, "config", "--global", "worktree-init.plugin", str(EXAMPLE_PLUGIN))
 
     switched = git(repo.parent / "a", "switch", "-c", "a2", check=False)
     cloned = git(tmp_path, "clone", "-q", str(repo), "clone", check=False)

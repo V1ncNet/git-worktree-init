@@ -124,3 +124,18 @@ def test_keyboard_interrupt_returns_130(configured, monkeypatch):
 
     assert code == 130
     assert "git wt refresh" in err.getvalue()
+
+
+def test_refresh_reports_setup_errors(configured, monkeypatch):
+    _, target = configured
+
+    def failing(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(cli, "declared", failing)
+    err = io.StringIO()
+
+    code = cli.main(["refresh", str(target)], env=dict(os.environ), out=io.StringIO(), err=err)
+
+    assert code == 2
+    assert "worktree-init: boom" in err.getvalue()

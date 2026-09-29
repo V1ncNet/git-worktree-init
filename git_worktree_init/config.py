@@ -51,7 +51,7 @@ def command_line_keys(entries: Entries) -> set[str]:
 
 
 def ignore_patterns(entries: Entries) -> list[str]:
-    return all_values(entries, "ignorePaths") or list(DEFAULT_IGNORE_PATHS)
+    return [p for p in all_values(entries, "ignorePaths") if p] or list(DEFAULT_IGNORE_PATHS)
 
 
 def path_ignored(path: Path, patterns: list[str]) -> bool:

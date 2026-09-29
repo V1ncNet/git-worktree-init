@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from git_worktree_init import config
+from git_worktree_init.config import Entry
 from helpers import git
 
 
@@ -46,3 +47,7 @@ def test_read_failure_is_raised(repo, monkeypatch):
 
     with pytest.raises(RuntimeError, match="boom"):
         config.read(repo, os.environ)
+
+
+def test_empty_ignore_paths_fall_back_to_default():
+    assert config.ignore_patterns({"ignorepaths": [Entry("local", "")]}) == ["*/.claude/worktrees/*"]

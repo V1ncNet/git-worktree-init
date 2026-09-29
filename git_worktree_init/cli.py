@@ -51,7 +51,11 @@ def _execute(target: Path, mode: str, env: dict[str, str], out: TextIO, err: Tex
 
 
 def _hook(env: dict[str, str], out: TextIO, err: TextIO) -> int:
-    target = worktrees.toplevel(Path.cwd(), gitenv.sanitized(env))
+    try:
+        target = worktrees.toplevel(Path.cwd(), gitenv.sanitized(env))
+    except (subprocess.CalledProcessError, RuntimeError) as error:
+        err.write(f"worktree-init: {error}\n")
+        return 1
     return _execute(target, "create", env, out, err)
 
 
@@ -112,7 +116,7 @@ def _refresh(argv: list[str], env: dict[str, str], out: TextIO, err: TextIO) -> 
         guess = cwd / argv[-1]
     try:
         options = declared(guess, env)
-    except plugins.PluginError as error:
+    except (plugins.PluginError, RuntimeError, subprocess.CalledProcessError) as error:
         err.write(f"worktree-init: {error}\n")
         return 2
     args, code = _parse("git wt refresh", options, True, argv)
