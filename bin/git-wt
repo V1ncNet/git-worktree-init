@@ -1,0 +1,6 @@
+#!/bin/sh
+root=$(cd "$(dirname "$0")/.." && pwd -P)
+cd "./${GIT_PREFIX:-}" || exit 1
+unset GIT_PREFIX
+python=${WT_PYTHON:-$(git config --get --type=path worktree-init.python 2>/dev/null)}
+exec "${python:-python3}" "$root/wti.py" "$@"
