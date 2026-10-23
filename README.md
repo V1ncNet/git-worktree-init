@@ -36,7 +36,7 @@ Nothing happens for a repository that has neither a `worktree-init.plugin` nor a
 
 ### Nix
 
-The flake `git+ssh://git@github.com/V1ncNet/git-worktree-init` provides `packages.<system>.default` for `aarch64-darwin`, `x86_64-linux` and `aarch64-linux`. The package keeps the layout of this repository, so `<clone>` above becomes the store path of the package. It falls back to the Python of its nixpkgs input, which makes `worktree-init.python` optional. With home-manager:
+The flake `github:V1ncNet/git-worktree-init` provides `packages.<system>.default` for `aarch64-darwin`, `x86_64-linux` and `aarch64-linux`. The package keeps the layout of this repository, so `<clone>` above becomes the store path of the package. It falls back to the Python of its nixpkgs input, which makes `worktree-init.python` optional. With home-manager:
 
 ```nix
 let
