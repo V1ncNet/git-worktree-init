@@ -62,6 +62,15 @@ def test_terminal_prompt_off_disables_prompt(configured):
     assert (target / ".env").read_text() == "SLOT=1\nPORT=8001\n"
 
 
+def test_local_interactive_false_disables_prompt(configured):
+    repo, target = configured
+    git(repo, "config", "worktree-init.interactive", "false")
+
+    engine.execute(target, "create", prompting_env(), out=io.StringIO(), tty_opener=pytest.fail)
+
+    assert (target / ".env").read_text() == "SLOT=1\nPORT=8001\n"
+
+
 def test_no_tty_uses_defaults(configured):
     _, target = configured
 
