@@ -31,6 +31,7 @@
 
           meta = {
             description = "Prepare new linked Git worktrees from a post-checkout hook";
+            license = nixpkgs.lib.licenses.mit;
             mainProgram = "git-wt";
             platforms = systems;
           };
