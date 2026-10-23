@@ -99,7 +99,7 @@ All keys live under `worktree-init.`.
 | `plugin` | Path to the plugin, absolute or relative to the main worktree |
 | `python` | Interpreter for the hook and `git wt` |
 | `reservedSlots` | Space-separated slots never handed out. Default `0`, an empty value reserves nothing |
-| `ignorePaths` | Glob patterns for worktree paths to skip. Multi-valued, default `*/.claude/worktrees/*` |
+| `ignorePaths` | Glob patterns for worktree paths to skip. Multi-valued, default `*/.claude/worktrees/*`, an empty value adds no pattern |
 | `interactive` | `false` switches the prompts off |
 
 Plus one key per option, for example `slot` or `source`.

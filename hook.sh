@@ -6,8 +6,7 @@ git_dir=$(git rev-parse --path-format=absolute --git-dir 2>/dev/null) || exit 0
 common_dir=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 0
 [ "$git_dir" = "$common_dir" ] && exit 0
 here=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
-patterns=$(git config --get-all worktree-init.ignorePaths)
-[ -n "$patterns" ] || patterns='*/.claude/worktrees/*'
+patterns=$(git config --get-all worktree-init.ignorePaths) || patterns='*/.claude/worktrees/*'
 set -f
 old_ifs=$IFS
 IFS='

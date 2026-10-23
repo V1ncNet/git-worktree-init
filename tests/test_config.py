@@ -49,5 +49,5 @@ def test_read_failure_is_raised(repo, monkeypatch):
         config.read(repo, os.environ)
 
 
-def test_empty_ignore_paths_fall_back_to_default():
-    assert config.ignore_patterns({"ignorepaths": [Entry("local", "")]}) == ["*/.claude/worktrees/*"]
+def test_empty_ignore_paths_ignore_nothing():
+    assert config.ignore_patterns({"ignorepaths": [Entry("local", "")]}) == []

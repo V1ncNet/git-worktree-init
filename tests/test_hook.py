@@ -82,6 +82,16 @@ def test_checkout_clone_and_ignored_paths_do_nothing(repo, tmp_path):
         assert "worktree-init" not in result.stdout + result.stderr
 
 
+def test_empty_ignore_paths_prepare_claude_worktrees(repo):
+    configure(repo)
+    git(repo, "config", "worktree-init.ignorePaths", "")
+
+    result = add(repo, "-b", "agent", ".claude/worktrees/agent 1")
+
+    assert result.returncode == 0
+    assert (repo / ".claude" / "worktrees" / "agent 1" / ".env").is_file()
+
+
 def test_failing_plugin_keeps_worktree_and_explains(repo, tmp_path):
     broken = tmp_path / "broken.py"
     broken.write_text("def slot_of(w):\n    return None\n\ndef apply(ctx):\n    raise RuntimeError('boom')\n")
