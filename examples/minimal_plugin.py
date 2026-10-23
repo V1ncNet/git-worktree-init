@@ -2,7 +2,7 @@ from pathlib import Path
 
 from git_worktree_init.options import Option
 
-OPTIONS = [Option("port_base", "text", "8000", "First port")]
+OPTIONS = [Option("port_base", "text", "8000", "first port")]
 
 
 def slot_of(worktree: Path) -> int | None:

@@ -97,7 +97,7 @@ def ask(
         for option in options:
             if not option.ask:
                 continue
-            label = option.help or option.name
+            label = _capitalized(option.help or option.name)
             default = defaults[option.name]
             if option.kind == "confirm":
                 answers[option.name] = prompter.confirm(label, bool(default))
@@ -113,3 +113,7 @@ def ask(
     except EOFError:
         pass
     return answers
+
+
+def _capitalized(text: str) -> str:
+    return text[:1].upper() + text[1:]

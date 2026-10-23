@@ -84,3 +84,11 @@ def test_open_tty_without_terminal_is_none():
     ).returncode
 
     assert code == 0
+
+
+def test_ask_capitalizes_help_as_label():
+    out = io.StringIO()
+
+    prompt.ask((Option("port_base", "text", "8000", "first port"),), {"port_base": "8000"}, prompt.Prompter(io.StringIO("\n"), out), None)
+
+    assert out.getvalue().startswith("? First port (8000)")

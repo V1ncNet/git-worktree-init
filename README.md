@@ -64,9 +64,11 @@ git wt refresh ../proj.foo
 ```
 
 - `git worktree add` runs the hook and prompts for options when a terminal is available. With `--no-checkout` Git does not run `post-checkout`, so initialize such a worktree with `git wt refresh`.
-- `git wt add [--yes] [--<option> ...] -- <git worktree add arguments>` turns the flags into `WT_*` variables for that one invocation and forwards everything after `--` to `git worktree add`. The exit code of `git worktree add` is returned, a usage error returns 2. Flags cannot be abbreviated.
+- `git wt add [<options>] -- <git-worktree-add-args>...` turns the flags into `WT_*` variables for that one invocation and forwards everything after `--` to `git worktree add`. The exit code of `git worktree add` is returned. Flags cannot be abbreviated.
 - `git -c worktree-init.<key>=<value>` and `WT_<NAME>` set an option without `git wt`.
-- `git wt refresh [--<option> ...] [<worktree>]` re-runs the preparation for an existing worktree, the current one by default. It keeps the existing slot and does not overwrite copied files that differ.
+- `git wt refresh [<options>] [<worktree>]` re-runs the preparation for an existing worktree, the current one by default. It keeps the existing slot and does not overwrite copied files that differ.
+
+`git wt -h`, `git wt add -h` and `git wt refresh -h` show the usage and the flags, including those of the plugin. Git answers `git wt --help` itself with the alias definition, so use `-h`. Help and usage errors exit with 129, like Git.
 
 To copy from the current worktree instead of the main worktree, pass `--source .` or set `WT_SOURCE=$PWD`. A relative `--source` is made absolute by `git wt`.
 
@@ -76,8 +78,8 @@ Every option has a flag, an environment variable and a config key. Underscores i
 
 | Option | Flag | Env | Config | Prompt |
 | --- | --- | --- | --- | --- |
-| `slot` | `--slot N` | `WT_SLOT` | `worktree-init.slot` | yes |
-| `source` | `--source PATH` | `WT_SOURCE` | `worktree-init.source` | no |
+| `slot` | `--slot <n>` | `WT_SLOT` | `worktree-init.slot` | yes |
+| `source` | `--source <path>` | `WT_SOURCE` | `worktree-init.source` | no |
 
 Plugins add their own options. Boolean options also accept `--no-<name>`.
 
@@ -135,7 +137,7 @@ A plugin is a Python file, referenced by `worktree-init.plugin`. It may define:
 | `apply(ctx)` | yes | Does the project-specific work |
 | `next_steps(ctx) -> list[str]` | no | Lines printed under "Next steps:" |
 
-`Option(name, kind, default=None, help="", choices=None, ask=True)` with `kind` one of `confirm`, `text`, `choice`, `slot`. `choices` is a list, or a function taking the `Context` and returning one. The names `slot` and `source` are reserved.
+`Option(name, kind, default=None, help="", choices=None, ask=True)` with `kind` one of `confirm`, `text`, `choice`, `slot`. `help` is a short lowercase phrase without a final period, as in Git. `git wt -h` shows it as is and the prompt capitalizes it. `choices` is a list, or a function taking the `Context` and returning one. The names `slot` and `source` are reserved.
 
 `ctx` is a `Context`.
 

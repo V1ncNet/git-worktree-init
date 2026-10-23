@@ -36,8 +36,8 @@ class Option:
 
 
 BUILTIN = (
-    Option("slot", "slot", None, "Slot"),
-    Option("source", "text", None, "Source worktree", ask=False),
+    Option("slot", "slot", None, "slot of the worktree"),
+    Option("source", "text", None, "worktree to copy files from", ask=False),
 )
 
 

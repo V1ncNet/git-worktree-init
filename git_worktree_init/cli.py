@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
@@ -10,7 +11,30 @@ from git_worktree_init import config, engine, gitenv, worktrees
 from git_worktree_init import options as opts
 from git_worktree_init import plugin as plugins
 
-USAGE = "usage: git wt {add,refresh} [options]\n"
+
+@dataclass(frozen=True)
+class Command:
+    synopsis: str
+    with_yes: bool
+    with_target: bool
+
+
+ADD = Command("git wt add [<options>] -- <git-worktree-add-args>...", with_yes=True, with_target=False)
+REFRESH = Command("git wt refresh [<options>] [<worktree>]", with_yes=False, with_target=True)
+USAGE = f"usage: {ADD.synopsis}\n   or: {REFRESH.synopsis}\n\n"
+HELP_FLAGS = ("-h", "--help")
+USAGE_ERROR = 129
+HELP_COLUMN = 26
+YES_HELP = "never prompt, use defaults"
+
+
+class UsageError(Exception):
+    pass
+
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message: str):
+        raise UsageError(message)
 
 
 def main(
@@ -18,22 +42,30 @@ def main(
     env: Mapping[str, str] | None = None,
     out: TextIO | None = None,
     err: TextIO | None = None,
+    help_out: TextIO | None = None,
 ) -> int:
     env = dict(os.environ if env is None else env)
     out = out or sys.stderr
     err = err or sys.stderr
+    help_out = help_out or sys.stdout
     if not argv:
-        err.write(USAGE)
-        return 2
+        return _usage_error(err, "need a subcommand", USAGE)
     command, rest = argv[0], list(argv[1:])
+    if command in HELP_FLAGS:
+        help_out.write(USAGE)
+        return USAGE_ERROR
     if command == "hook":
         return _hook(env, out, err)
     if command == "add":
-        return _add(rest, env, err)
+        return _add(rest, env, err, help_out)
     if command == "refresh":
-        return _refresh(rest, env, out, err)
-    err.write(USAGE)
-    return 2
+        return _refresh(rest, env, out, err, help_out)
+    return _usage_error(err, f"unknown subcommand: `{command}'", USAGE)
+
+
+def _usage_error(err: TextIO, message: str, usage: str) -> int:
+    err.write(f"error: {message}\n{usage}")
+    return USAGE_ERROR
 
 
 def _repair(target: Path) -> str:
@@ -71,11 +103,12 @@ def declared(cwd: Path, env: Mapping[str, str]) -> tuple[opts.Option, ...]:
     return opts.BUILTIN + (plugins.load(path).options if path else ())
 
 
-def parser(prog: str, options: Sequence[opts.Option], with_target: bool) -> argparse.ArgumentParser:
-    result = argparse.ArgumentParser(prog=prog, allow_abbrev=False)
-    result.add_argument("--yes", action="store_true", help="never ask, use defaults")
+def parser(command: Command, options: Sequence[opts.Option]) -> argparse.ArgumentParser:
+    result = Parser(add_help=False, allow_abbrev=False)
+    if command.with_yes:
+        result.add_argument("--yes", action="store_true")
     for option in options:
-        keywords = {"dest": option.name, "default": None, "help": option.help}
+        keywords = {"dest": option.name, "default": None}
         if option.kind == "confirm":
             result.add_argument(option.flag, action=argparse.BooleanOptionalAction, **keywords)
         elif option.kind == "slot":
@@ -84,9 +117,38 @@ def parser(prog: str, options: Sequence[opts.Option], with_target: bool) -> argp
             result.add_argument(option.flag, choices=list(option.choices), **keywords)
         else:
             result.add_argument(option.flag, **keywords)
-    if with_target:
+    if command.with_target:
         result.add_argument("worktree", nargs="?")
     return result
+
+
+def help_text(command: Command, options: Sequence[opts.Option]) -> str:
+    rows = [_row("--yes", YES_HELP)] if command.with_yes else []
+    rows += [option_row(option) for option in options]
+    return f"usage: {command.synopsis}\n\n" + "\n".join(rows) + "\n\n"
+
+
+def option_row(option: opts.Option) -> str:
+    return _row(_flag_spec(option), option.help)
+
+
+def _flag_spec(option: opts.Option) -> str:
+    if option.kind == "confirm":
+        return "--[no-]" + option.flag.removeprefix("--")
+    if option.kind == "slot":
+        return f"{option.flag} <n>"
+    if option.name == "source":
+        return f"{option.flag} <path>"
+    if option.kind == "choice" and option.choices and not callable(option.choices):
+        return f"{option.flag} ({'|'.join(option.choices)})"
+    return f"{option.flag} <value>"
+
+
+def _row(spec: str, text: str) -> str:
+    left = "    " + spec
+    if len(left) < HELP_COLUMN:
+        return (left.ljust(HELP_COLUMN) + text).rstrip()
+    return f"{left}\n{' ' * HELP_COLUMN}{text}".rstrip()
 
 
 def flag_env(options: Sequence[opts.Option], args: argparse.Namespace, cwd: Path) -> dict[str, str]:
@@ -104,14 +166,22 @@ def flag_env(options: Sequence[opts.Option], args: argparse.Namespace, cwd: Path
     return result
 
 
-def _parse(prog: str, options, with_target: bool, argv: Sequence[str]):
+def _wants_help(argv: Sequence[str]) -> bool:
+    options = argv[:argv.index("--")] if "--" in argv else argv
+    return any(arg in HELP_FLAGS for arg in options)
+
+
+def _parse(command: Command, options, argv: Sequence[str], err: TextIO, help_out: TextIO):
+    if _wants_help(argv):
+        help_out.write(help_text(command, options))
+        return None, USAGE_ERROR
     try:
-        return parser(prog, options, with_target).parse_args(argv), 0
-    except SystemExit as exit_:
-        return None, int(exit_.code or 0)
+        return parser(command, options).parse_args(argv), 0
+    except UsageError as error:
+        return None, _usage_error(err, str(error), help_text(command, options))
 
 
-def _refresh(argv: list[str], env: dict[str, str], out: TextIO, err: TextIO) -> int:
+def _refresh(argv: list[str], env: dict[str, str], out: TextIO, err: TextIO, help_out: TextIO) -> int:
     cwd = Path.cwd()
     guess = cwd
     if argv and not argv[-1].startswith("-") and (cwd / argv[-1]).is_dir():
@@ -121,7 +191,7 @@ def _refresh(argv: list[str], env: dict[str, str], out: TextIO, err: TextIO) -> 
     except (plugins.PluginError, RuntimeError, subprocess.CalledProcessError) as error:
         err.write(f"worktree-init: {error}\n")
         return 2
-    args, code = _parse("git wt refresh", options, True, argv)
+    args, code = _parse(REFRESH, options, argv, err, help_out)
     if args is None:
         return code
     location = (cwd / args.worktree) if args.worktree else cwd
@@ -133,7 +203,7 @@ def _refresh(argv: list[str], env: dict[str, str], out: TextIO, err: TextIO) -> 
     return _execute(target, "refresh", env | flag_env(options, args, cwd), out, err)
 
 
-def _add(argv: list[str], env: dict[str, str], err: TextIO) -> int:
+def _add(argv: list[str], env: dict[str, str], err: TextIO, help_out: TextIO) -> int:
     cwd = Path.cwd()
     if "--" in argv:
         split = argv.index("--")
@@ -145,12 +215,11 @@ def _add(argv: list[str], env: dict[str, str], err: TextIO) -> int:
     except (plugins.PluginError, RuntimeError, subprocess.CalledProcessError) as error:
         err.write(f"worktree-init: {error}\n")
         return 2
-    args, code = _parse("git wt add", options, False, own)
+    if forwarded is None and not _wants_help(own):
+        return _usage_error(err, "missing -- before the git worktree add arguments", help_text(ADD, options))
+    args, code = _parse(ADD, options, own, err, help_out)
     if args is None:
         return code
-    if forwarded is None:
-        err.write("usage: git wt add [options] -- <git worktree add arguments>\n")
-        return 2
     child = env | flag_env(options, args, cwd)
     if args.yes:
         child["WT_YES"] = "1"

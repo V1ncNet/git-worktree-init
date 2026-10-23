@@ -58,7 +58,7 @@ Two worktrees created at the same time could otherwise pick the same free slot. 
 
 ## Messages go to stderr
 
-Git redirects the stdout of a hook to stderr. The core writes everything to stderr from the start, so output looks the same in the hook and in `git wt`. Only `--help` of `git wt` writes to stdout, because it is output rather than a message.
+Git redirects the stdout of a hook to stderr. The core writes everything to stderr from the start, so output looks the same in the hook and in `git wt`. Only `-h` of `git wt` writes to stdout, because it is output rather than a message.
 
 ## `/dev/tty` with two handles
 

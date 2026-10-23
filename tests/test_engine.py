@@ -43,7 +43,7 @@ def test_interactive_answers_win_over_defaults(configured):
     engine.execute(target, "create", prompting_env(), out=io.StringIO(), tty_opener=lambda: tty)
 
     assert (target / ".env").read_text() == "SLOT=4\nPORT=9004\n"
-    assert "? Slot (1) › " in tty.output.getvalue()
+    assert "? Slot of the worktree (1) › " in tty.output.getvalue()
 
 
 def test_env_option_disables_prompt(configured):
