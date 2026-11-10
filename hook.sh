@@ -17,7 +17,8 @@ done
 IFS=$old_ifs
 set +f
 main=$(git worktree list --porcelain | sed -n '1s/^worktree //p')
-if [ -z "$(git config --get worktree-init.plugin)" ] && [ ! -f "$main/.worktreeinclude" ]; then
+if [ -z "$(git config --get worktree-init.plugin)" ] && [ ! -f "$main/.worktreeinclude" ] \
+    && [ -z "$(git config --get-all worktree-init.localInclude)" ]; then
     exit 0
 fi
 python=${WT_PYTHON:-$(git config --get --type=path worktree-init.python)}

@@ -116,6 +116,49 @@ def test_create_on_prepared_worktree_keeps_slot_and_files(configured):
     assert (target / "a.log").read_text() == "old"
 
 
+def test_local_include_copies_from_main_once(configured):
+    repo, target = configured
+    git(repo, "config", "worktree-init.localInclude", "CLAUDE.local.md")
+    (repo / "CLAUDE.local.md").write_text("private")
+
+    engine.execute(target, "create", dict(os.environ), out=io.StringIO())
+
+    assert (target / "CLAUDE.local.md").read_text() == "private"
+
+
+def test_local_include_never_overwrites(configured):
+    repo, target = configured
+    git(repo, "config", "worktree-init.localInclude", "CLAUDE.local.md")
+    (repo / "CLAUDE.local.md").write_text("private")
+    (target / "CLAUDE.local.md").write_text("changed")
+
+    engine.execute(target, "refresh", dict(os.environ), out=io.StringIO())
+
+    assert (target / "CLAUDE.local.md").read_text() == "changed"
+
+
+def test_local_include_uses_main_even_with_source(configured):
+    repo, target = configured
+    git(repo, "config", "worktree-init.localInclude", "CLAUDE.local.md")
+    git(repo, "worktree", "add", "-q", "-b", "s", "../s")
+    source = (repo.parent / "s").resolve()
+    (repo / "CLAUDE.local.md").write_text("from main")
+    (source / "CLAUDE.local.md").write_text("from source")
+
+    engine.execute(target, "create", dict(os.environ, WT_SOURCE=str(source)), out=io.StringIO())
+
+    assert (target / "CLAUDE.local.md").read_text() == "from main"
+
+
+def test_local_include_skips_missing(configured):
+    repo, target = configured
+    git(repo, "config", "worktree-init.localInclude", "CLAUDE.local.md")
+
+    engine.execute(target, "create", dict(os.environ), out=io.StringIO())
+
+    assert not (target / "CLAUDE.local.md").exists()
+
+
 def test_relative_source_is_rejected(configured):
     _, target = configured
 

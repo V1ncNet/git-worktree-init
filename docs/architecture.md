@@ -17,7 +17,8 @@ flowchart TD
     I --> J[lock]
     J --> K[re-read worktree list, allocate or validate slot]
     K --> L[copy .worktreeinclude files]
-    L --> M[plugin.apply]
+    L --> L2[copy localInclude files from main]
+    L2 --> M[plugin.apply]
     M --> N[unlock]
     N --> O[plugin.next_steps]
 ```
@@ -32,9 +33,9 @@ flowchart TD
 2. The checkout is not a branch checkout.
 3. `--git-dir` equals `--git-common-dir`, so this is not a linked worktree.
 4. The worktree path matches an `ignorePaths` pattern.
-5. Neither `worktree-init.plugin` is set nor the main worktree has a `.worktreeinclude`.
+5. Neither `worktree-init.plugin` nor `worktree-init.localInclude` is set, and the main worktree has no `.worktreeinclude`.
 
-An ordinary checkout or clone costs at most two `git rev-parse`. Only a new linked worktree adds another `rev-parse`, up to three `git config` and one `git worktree list`. Python starts only after all filters passed.
+An ordinary checkout or clone costs at most two `git rev-parse`. Only a new linked worktree adds another `rev-parse`, up to four `git config` and one `git worktree list`. Python starts only after all filters passed.
 
 ## `wti.py` instead of `python -m`
 
@@ -47,6 +48,10 @@ Two worktrees created at the same time could otherwise pick the same free slot. 
 ## Source is the main worktree
 
 `post-checkout` runs inside the new worktree. Nothing tells the hook which worktree `git worktree add` was called from, so the default source is the main worktree. `--source .` or `WT_SOURCE=$PWD` overrides this. The path must be absolute, because it is resolved inside the hook and not relative to the caller.
+
+## Local includes ignore the source
+
+`worktree-init.localInclude` names private files such as personal agent instructions. They are copied once and then diverge on purpose, so the copy in another worktree is not a reliable origin. The main worktree is, so these files always come from there, and an existing file is never overwritten. The list lives in the local config because naming these files in a tracked `.worktreeinclude` would publish them.
 
 ## `git -c` switches prompts off
 

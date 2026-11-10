@@ -32,7 +32,7 @@ To switch the hook off in one repository:
 git config hook.worktree-init.enabled false
 ```
 
-Nothing happens for a repository that has neither a `worktree-init.plugin` nor a `.worktreeinclude` in its main worktree.
+Nothing happens for a repository that has no `worktree-init.plugin`, no `worktree-init.localInclude` and no `.worktreeinclude` in its main worktree.
 
 ### Nix
 
@@ -111,6 +111,14 @@ The format is the one of Claude Code. Each line is a pattern in `.gitignore` syn
 - The file is read from the source worktree. If it is missing there, the one of the main worktree is used.
 - To carry `.worktreeinclude` itself into every worktree, list it in the file.
 
+Private files that must not be named in a tracked file go into the local config instead, one path per value:
+
+```sh
+git config --add worktree-init.localInclude CLAUDE.local.md
+```
+
+Each listed path is copied from the main worktree, even with `--source`. An existing file in the new worktree is never overwritten, and a path missing in the main worktree is skipped.
+
 ## Configuration keys
 
 All keys live under `worktree-init.`.
@@ -122,6 +130,7 @@ All keys live under `worktree-init.`.
 | `reservedSlots` | Space-separated slots never handed out. Default `0`, an empty value reserves nothing |
 | `ignorePaths` | Glob patterns for worktree paths to skip. Multi-valued, default `*/.claude/worktrees/*`, an empty value adds no pattern |
 | `interactive` | `false` switches the prompts off |
+| `localInclude` | Path relative to the worktree root, copied once from the main worktree. Multi-valued |
 
 Plus one key per option, for example `slot` or `source`.
 

@@ -102,6 +102,9 @@ def execute(
         for rel in include.included(ctx.source, run_env, spec):
             if ctx.copy(rel, overwrite=overwrite):
                 ctx.info(f"copied {rel}")
+        for rel in config.all_values(entries, "localInclude"):
+            if ctx.copy(rel, source=repo.main, overwrite=False):
+                ctx.info(f"copied {rel}")
         if loaded:
             loaded.apply(ctx)
     if loaded and loaded.next_steps:

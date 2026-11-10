@@ -41,6 +41,17 @@ def test_include_only_repo_copies_files_into_path_with_spaces(repo):
     assert (target / "local" / "x.txt").read_text() == "x"
 
 
+def test_local_include_only_repo_copies_files(repo):
+    register_hook(repo)
+    git(repo, "config", "worktree-init.localInclude", ".env")
+    (repo / ".env").write_text("A=1\n")
+
+    result = add(repo, "-b", "s", "../s")
+
+    assert result.returncode == 0
+    assert (repo.parent / "s" / ".env").read_text() == "A=1\n"
+
+
 def test_plugin_runs_and_allocates_consecutive_slots(repo):
     configure(repo)
 
