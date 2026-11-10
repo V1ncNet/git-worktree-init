@@ -22,8 +22,9 @@ class Command:
 ADD = Command("git wt add [<options>] -- <git-worktree-add-args>...", with_yes=True, with_target=False)
 REFRESH = Command("git wt refresh [<options>] [<worktree>]", with_yes=False, with_target=True)
 HARNESS_INIT = "git wt harness init --remote <url>"
-USAGE = f"usage: {ADD.synopsis}\n   or: {REFRESH.synopsis}\n   or: {HARNESS_INIT}\n\n"
-HARNESS_USAGE = f"usage: {HARNESS_INIT}\n\n"
+HARNESS_SYNC = "git wt harness sync"
+USAGE = f"usage: {ADD.synopsis}\n   or: {REFRESH.synopsis}\n   or: {HARNESS_INIT}\n   or: {HARNESS_SYNC}\n\n"
+HARNESS_USAGE = f"usage: {HARNESS_INIT}\n   or: {HARNESS_SYNC}\n\n"
 HELP_FLAGS = ("-h", "--help")
 USAGE_ERROR = 129
 HELP_COLUMN = 26
@@ -239,8 +240,10 @@ def _harness(argv: list[str], env: dict[str, str], err: TextIO, help_out: TextIO
     if _wants_help(argv):
         help_out.write(HARNESS_USAGE)
         return USAGE_ERROR
+    if argv == ["sync"]:
+        return _harness_sync(env, err)
     if argv[:1] != ["init"]:
-        return _usage_error(err, "need the subcommand init", HARNESS_USAGE)
+        return _usage_error(err, "need the subcommand init or sync", HARNESS_USAGE)
     init = Parser(add_help=False, allow_abbrev=False)
     init.add_argument("--remote", required=True)
     try:
@@ -265,6 +268,21 @@ def _harness_hook(argv: list[str], env: dict[str, str], err: TextIO) -> int:
             branch = gitenv.git(target, "symbolic-ref", "-q", "--short", "HEAD", env=clean, check=False).strip()
             if branch:
                 harness.switch(target, branch, env)
+        if argv[:1] == ["pre-push"]:
+            harness.snapshot(target, env)
+            harness.push(target, env, err)
     except subprocess.CalledProcessError as error:
         err.write(f"worktree-init: harness: {(error.stderr or str(error)).strip()}\n")
+    except Exception as error:
+        err.write(f"worktree-init: harness: {error}\n")
     return 0
+
+
+def _harness_sync(env: dict[str, str], err: TextIO) -> int:
+    try:
+        target = worktrees.toplevel(Path.cwd(), gitenv.sanitized(env))
+        harness.snapshot(target, env)
+    except subprocess.CalledProcessError as error:
+        err.write(f"worktree-init: harness: {(error.stderr or str(error)).strip()}\n")
+        return 1
+    return 0 if harness.push(target, env, err) else 1

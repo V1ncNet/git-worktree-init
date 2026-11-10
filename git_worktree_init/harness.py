@@ -1,7 +1,9 @@
 import shutil
+import subprocess
 import sys
 from collections.abc import Mapping
 from pathlib import Path
+from typing import TextIO
 
 from git_worktree_init import gitenv
 
@@ -112,6 +114,18 @@ def switch(target: Path, branch: str, env: Mapping[str, str]) -> None:
         return
     snapshot(target, env)
     attach(target, branch, env)
+
+
+def push(target: Path, env: Mapping[str, str], err: TextIO | None = None) -> bool:
+    branch = git(target, "symbolic-ref", "-q", "--short", "HEAD", env=env, check=False).strip()
+    try:
+        git(target, "push", "-q", REMOTE, f"refs/heads/{branch}:refs/heads/{branch}", env=_offline_safe(env))
+    except subprocess.CalledProcessError as error:
+        lines = (error.stderr or "").strip().splitlines()
+        reason = lines[-1] if lines else f"exit {error.returncode}"
+        print(f"worktree-init: harness push failed: {reason}", file=err or sys.stderr)
+        return False
+    return True
 
 
 def _candidates(branch: str) -> tuple[str, ...]:

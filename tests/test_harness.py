@@ -114,10 +114,26 @@ def test_shim_exits_inside_harness_operation(harnessed):
     assert result.returncode == 0
 
 
-def test_shim_starts_python_with_harness(harnessed):
-    result = shim(harnessed, "0" * 40, "1" * 40, "1")
+def test_shim_starts_python_with_harness(harnessed, tmp_path):
+    marker = tmp_path / "marker"
+    fake = tmp_path / "fake-python"
+    fake.write_text(f'#!/bin/sh\necho "$@" > "{marker}"\nexit 3\n')
+    fake.chmod(0o755)
 
-    assert result.returncode == 1
+    result = shim(harnessed, "0" * 40, "1" * 40, "1", WT_PYTHON=str(fake))
+
+    assert result.returncode == 0
+    assert marker.read_text().split()[1:3] == ["harness-hook", "post-checkout"]
+
+
+def test_pre_push_survives_broken_python(pushing):
+    target, _ = pushing
+    git(target, "config", "worktree-init.python", "/nonexistent/python")
+
+    result = git(target, "push", "-q", "origin", "feature/foo", check=False)
+
+    assert result.returncode == 0
+    assert git(target, "ls-remote", "origin", "feature/foo").stdout
 
 
 def test_shim_exits_outside_repository(tmp_path):
@@ -315,3 +331,96 @@ def test_rebase_with_autostash_leaves_harness_untouched(seeded):
     assert harness.git(target, "rev-parse", "HEAD", env=env) == head
     assert harness.git(target, "ls-files", "--stage", env=env) == index
     assert harness.git(target, "status", "--porcelain", env=env) == status
+
+
+@pytest.fixture
+def pushing(seeded, tmp_path):
+    origin = tmp_path / "origin.git"
+    remote = tmp_path / "harness-remote.git"
+    for bare in (origin, remote):
+        git(tmp_path, "init", "-q", "--bare", str(bare))
+    git(seeded, "remote", "add", "origin", str(origin))
+    git(seeded / ".git" / "harness.git", "remote", "set-url", "harness", str(remote))
+    git(seeded, "config", "--add", "hook.harness.event", "pre-push")
+    git(seeded, "worktree", "add", "-q", "-b", "feature/foo", "../foo")
+    target = seeded.parent / "foo"
+    (target / ".claude").mkdir()
+    (target / ".claude" / "h.md").write_text("handoff")
+    return target, remote
+
+
+def test_harness_network_calls_never_prompt(seeded, tmp_path, monkeypatch):
+    log = tmp_path / "ssh-args"
+    fake = tmp_path / "bin" / "ssh"
+    fake.parent.mkdir()
+    fake.write_text(f'#!/bin/sh\necho "$@" >> "{log}"\nexit 255\n')
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake.parent}:{os.environ['PATH']}")
+    git(seeded / ".git" / "harness.git", "remote", "set-url", "harness", "ssh://example.invalid/h.git")
+
+    assert not harness.push(seeded, dict(os.environ), err=io.StringIO())
+
+    assert "BatchMode=yes" in log.read_text()
+    assert "ConnectTimeout=" in log.read_text()
+
+
+
+def test_pre_push_pushes_harness_branch(pushing):
+    target, remote = pushing
+
+    result = git(target, "push", "-q", "origin", "feature/foo", check=False)
+
+    assert result.returncode == 0, result.stderr
+    assert git(remote, "show", "feature/foo:.claude/h.md").stdout == "handoff"
+
+
+def test_pre_push_survives_unreachable_harness(pushing):
+    target, _ = pushing
+    git(target / ".." / "proj" / ".git" / "harness.git", "remote", "set-url", "harness", "/nonexistent")
+
+    result = git(target, "push", "-q", "origin", "feature/foo", check=False)
+
+    assert result.returncode == 0
+    assert "harness push failed" in result.stderr
+    assert git(target, "ls-remote", "origin", "feature/foo").stdout
+
+
+def test_sync_exits_one_on_failure(pushing, monkeypatch):
+    target, _ = pushing
+    git(target / ".." / "proj" / ".git" / "harness.git", "remote", "set-url", "harness", "/nonexistent")
+    monkeypatch.chdir(target)
+    err = io.StringIO()
+
+    result = cli.main(["harness", "sync"], env=dict(os.environ), err=err)
+
+    assert result == 1
+    assert "harness push failed" in err.getvalue()
+
+
+def test_sync_pushes_snapshot(pushing, monkeypatch):
+    target, remote = pushing
+    monkeypatch.chdir(target)
+
+    result = cli.main(["harness", "sync"], env=dict(os.environ), err=io.StringIO())
+
+    assert result == 0
+    assert git(remote, "show", "feature/foo:.claude/h.md").stdout == "handoff"
+
+
+def test_push_never_forces(pushing, tmp_path):
+    target, remote = pushing
+    env = dict(os.environ)
+    assert harness.snapshot(target, env)
+    assert harness.push(target, env)
+    other = tmp_path / "other"
+    git(tmp_path, "clone", "-q", "-b", "feature/foo", str(remote), str(other))
+    (other / "x.md").write_text("remote")
+    git(other, "add", "x.md")
+    git(other, "commit", "-q", "-m", "Remote change")
+    git(other, "push", "-q", "origin", "feature/foo")
+    advanced = git(remote, "rev-parse", "feature/foo").stdout
+    (target / ".claude" / "h.md").write_text("local")
+    harness.snapshot(target, env)
+
+    assert not harness.push(target, env)
+    assert git(remote, "rev-parse", "feature/foo").stdout == advanced

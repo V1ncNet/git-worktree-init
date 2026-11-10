@@ -9,6 +9,7 @@ TOP_LEVEL_USAGE = (
     "usage: git wt add [<options>] -- <git-worktree-add-args>...\n"
     "   or: git wt refresh [<options>] [<worktree>]\n"
     "   or: git wt harness init --remote <url>\n"
+    "   or: git wt harness sync\n"
     "\n"
 )
 

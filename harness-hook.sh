@@ -10,4 +10,5 @@ case $# in
 esac
 python=${WT_PYTHON:-$(git config --get --type=path worktree-init.python)}
 root=$(cd "$(dirname "$0")" && pwd -P)
-exec "${python:-python3}" "$root/wti.py" harness-hook "$event" "$@"
+"${python:-python3}" "$root/wti.py" harness-hook "$event" "$@" || echo "worktree-init: harness hook failed, $event continues" >&2
+exit 0
