@@ -88,7 +88,11 @@ Submitted features are detected through the `reference-transaction` hook. A fetc
 
 `harness-hook.sh` is registered globally like `hook.sh` and exits before Python when `GIT_DIR` points into a `harness.git`, when the repository has no `harness.git`, or when the number of arguments matches no handled event. Git passes no event name to a hook from the config, so the shim derives it from the arguments: three for `post-checkout`, two for `pre-push`, one for `reference-transaction`. One registration then serves all events, and one override `hook.harness.enabled=false` in `harness.git/config` keeps harness operations from triggering it.
 
-Never run `git worktree` subcommands against `harness.git`. `remove` and `move` would act on the path in `gitdir`, which is the Git directory of the code worktree.
+A new worktree has no harness index yet. Its first checkout is forced and skips the snapshot, because comparing an empty index with `develop` would commit the deletion of every harness file. A checkout of the branch the harness already follows is skipped as well.
+
+An admin directory whose anchor no longer exists belongs to a removed code worktree. It is deleted before a new one is created under the same name, and `git worktree prune` in the harness drops the others. Otherwise a reused worktree name would inherit the old index and snapshot the deletion of every harness file onto the old branch, and a branch of a removed worktree could not be checked out again. `prune` is safe here because of the anchor.
+
+Never run `git worktree remove` or `move` against `harness.git`. `remove` and `move` would act on the path in `gitdir`, which is the Git directory of the code worktree.
 
 ## Limits
 

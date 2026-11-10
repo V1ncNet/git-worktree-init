@@ -65,7 +65,7 @@ def main(
     if command == "harness":
         return _harness(rest, env, err, help_out)
     if command == "harness-hook":
-        return 0
+        return _harness_hook(rest, env, err)
     return _usage_error(err, f"unknown subcommand: `{command}'", USAGE)
 
 
@@ -254,4 +254,17 @@ def _harness(argv: list[str], env: dict[str, str], err: TextIO, help_out: TextIO
         err.write(f"worktree-init: {(error.stderr or str(error)).strip()}\n")
         return 1
     err.write(f"worktree-init: harness created in {harness.git_dir(repo.common_dir)}\n")
+    return 0
+
+
+def _harness_hook(argv: list[str], env: dict[str, str], err: TextIO) -> int:
+    clean = gitenv.sanitized(env)
+    try:
+        target = worktrees.toplevel(Path.cwd(), clean)
+        if argv[:1] == ["post-checkout"] and argv[3:4] == ["1"]:
+            branch = gitenv.git(target, "symbolic-ref", "-q", "--short", "HEAD", env=clean, check=False).strip()
+            if branch:
+                harness.switch(target, branch, env)
+    except subprocess.CalledProcessError as error:
+        err.write(f"worktree-init: harness: {(error.stderr or str(error)).strip()}\n")
     return 0

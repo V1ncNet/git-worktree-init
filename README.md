@@ -127,7 +127,9 @@ The harness is a second repository under `<git-common-dir>/harness.git` for file
 git wt harness init --remote <url>
 ```
 
-This adds the remote `harness`, writes the allowlist to `harness.git/info/exclude` and turns signing, the global hooks and the global excludes file off for harness operations. The lines of a `# claude-code-runtime` block in `.git/info/exclude` are excluded as well. Never run `git worktree` against `harness.git`, because `remove` and `move` would act on the Git directory of a code worktree.
+This adds the remote `harness`, writes the allowlist to `harness.git/info/exclude` and turns signing, the global hooks and the global excludes file off for harness operations. The lines of a `# claude-code-runtime` block in `.git/info/exclude` are excluded as well.
+
+With the hook registered (see Install), the harness follows branch checkouts. A branch that exists in the harness, locally or on the remote `harness`, is resumed. A new one forks from the harness branch of its base: `branch.<name>.t3-merge-base`, else the upstream branch if it has another name, else `develop`. Before switching, uncommitted harness changes are committed as `Snapshot harness state`. A snapshot skips files ignored by a `.gitignore` inside the harness and `.DS_Store`, and it refuses to run when every harness file is missing, for example after `git clean -xfd`. A checkout that leaves HEAD detached, such as a rebase, changes nothing in the harness. Never run `git worktree` against `harness.git`, because `remove` and `move` would act on the Git directory of a code worktree.
 
 ## Configuration keys
 

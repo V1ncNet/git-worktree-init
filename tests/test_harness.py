@@ -2,6 +2,7 @@ import io
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -142,3 +143,175 @@ def test_cli_harness_without_subcommand_is_usage_error(code, monkeypatch):
 
     assert result == 129
     assert "git wt harness init --remote <url>" in err.getvalue()
+
+
+@pytest.fixture
+def seeded(harnessed):
+    env = dict(os.environ)
+    (harnessed / "CLAUDE.md").write_text("develop")
+    harness.git(harnessed, "add", "CLAUDE.md", env=env)
+    harness.git(harnessed, "commit", "-q", "-m", "Seed", env=env)
+    git(harnessed, "config", "hook.harness.command", str(HARNESS_HOOK))
+    git(harnessed, "config", "--add", "hook.harness.event", "post-checkout")
+    git(harnessed, "config", "worktree-init.python", sys.executable)
+    return harnessed
+
+
+def harness_branch_with(main, branch, rel, text):
+    env = dict(os.environ)
+    harness.git(main, "checkout", "-q", "-b", branch, env=env)
+    (main / rel).parent.mkdir(parents=True, exist_ok=True)
+    (main / rel).write_text(text)
+    harness.git(main, "add", rel, env=env)
+    harness.git(main, "commit", "-q", "-m", f"Add {rel}", env=env)
+    harness.git(main, "checkout", "-q", "develop", env=env)
+
+
+def current(target):
+    return harness.git(target, "symbolic-ref", "--short", "HEAD", env=dict(os.environ)).strip()
+
+
+def test_reused_worktree_path_does_not_snapshot_stale_admin(seeded):
+    env = dict(os.environ)
+    git(seeded, "worktree", "add", "-q", "-b", "feature/old", "../wt")
+    target = seeded.parent / "wt"
+    git(seeded, "worktree", "remove", "--force", str(target))
+    before = harness.git(seeded, "rev-parse", "feature/old", env=env)
+
+    git(seeded, "worktree", "add", "-q", "-b", "feature/new", "../wt")
+
+    assert harness.git(seeded, "rev-parse", "feature/old", env=env) == before
+    assert current(target) == "feature/new"
+    assert (target / "CLAUDE.md").read_text() == "develop"
+
+
+def test_branch_of_removed_worktree_attaches_elsewhere(seeded):
+    git(seeded, "worktree", "add", "-q", "-b", "feature/x", "../a")
+    git(seeded, "worktree", "remove", "--force", str(seeded.parent / "a"))
+
+    git(seeded, "worktree", "add", "-q", "../b", "feature/x")
+
+    target = seeded.parent / "b"
+    assert current(target) == "feature/x"
+    assert (target / "CLAUDE.md").read_text() == "develop"
+
+
+def test_snapshot_refuses_when_every_harness_file_is_gone(seeded):
+    env = dict(os.environ)
+    head = harness.git(seeded, "rev-parse", "HEAD", env=env)
+    (seeded / "CLAUDE.md").unlink()
+
+    assert not harness.snapshot(seeded, env)
+    assert harness.git(seeded, "rev-parse", "HEAD", env=env) == head
+
+
+def test_snapshot_honours_harness_gitignore_and_skips_ds_store(seeded):
+    env = dict(os.environ)
+    plugin = seeded / ".claude" / "plugin"
+    (plugin / ".pytest_cache").mkdir(parents=True)
+    (plugin / ".gitignore").write_text(".pytest_cache/\n")
+    (plugin / ".pytest_cache" / "x").write_text("cache")
+    (seeded / ".claude" / ".DS_Store").write_text("finder")
+
+    assert harness.snapshot(seeded, env)
+
+    files = harness.git(seeded, "ls-files", env=env).splitlines()
+    assert ".claude/plugin/.gitignore" in files
+    assert ".claude/plugin/.pytest_cache/x" not in files
+    assert ".claude/.DS_Store" not in files
+
+
+def test_new_branch_forks_from_t3_merge_base(seeded):
+    harness_branch_with(seeded, "release/x", ".claude/release.md", "release")
+    git(seeded, "branch", "feature/a")
+    git(seeded, "config", "branch.feature/a.t3-merge-base", "release/x")
+
+    git(seeded, "worktree", "add", "-q", "../a", "feature/a")
+
+    target = seeded.parent / "a"
+    assert current(target) == "feature/a"
+    assert (target / ".claude" / "release.md").read_text() == "release"
+    assert (target / "CLAUDE.md").read_text() == "develop"
+
+
+def test_new_branch_forks_from_renamed_upstream(seeded):
+    harness_branch_with(seeded, "release/x", ".claude/release.md", "release")
+    git(seeded, "branch", "feature/b")
+    git(seeded, "config", "branch.feature/b.remote", "origin")
+    git(seeded, "config", "branch.feature/b.merge", "refs/heads/release/x")
+
+    git(seeded, "worktree", "add", "-q", "../b", "feature/b")
+
+    assert (seeded.parent / "b" / ".claude" / "release.md").read_text() == "release"
+
+
+def test_branch_tracking_itself_forks_from_develop(seeded):
+    harness_branch_with(seeded, "feature/c", ".claude/other.md", "other")
+    git(seeded, "branch", "-q", "feature/c-code")
+    git(seeded, "config", "branch.feature/c-code.remote", "origin")
+    git(seeded, "config", "branch.feature/c-code.merge", "refs/heads/feature/c-code")
+
+    git(seeded, "worktree", "add", "-q", "../c", "feature/c-code")
+
+    target = seeded.parent / "c"
+    assert current(target) == "feature/c-code"
+    assert (target / "CLAUDE.md").read_text() == "develop"
+    assert not (target / ".claude" / "other.md").exists()
+
+
+def test_existing_remote_harness_branch_is_resumed(seeded, tmp_path):
+    remote = tmp_path / "remote.git"
+    git(tmp_path, "init", "-q", "--bare", str(remote))
+    root = seeded / ".git" / "harness.git"
+    git(root, "remote", "set-url", "harness", str(remote))
+    harness_branch_with(seeded, "feature/foo", ".claude/handoffs/a.md", "handoff")
+    git(root, "push", "-q", "harness", "feature/foo")
+    git(root, "branch", "-q", "-D", "feature/foo")
+
+    git(seeded, "worktree", "add", "-q", "-b", "feature/foo", "../foo")
+
+    assert (seeded.parent / "foo" / ".claude" / "handoffs" / "a.md").read_text() == "handoff"
+
+
+def test_switch_snapshots_dirty_harness_first(seeded):
+    git(seeded, "worktree", "add", "-q", "-b", "feature/a", "../a")
+    target = seeded.parent / "a"
+    (target / ".claude").mkdir()
+    (target / ".claude" / "h.md").write_text("dirty")
+
+    git(target, "checkout", "-q", "-b", "feature/b")
+
+    log = harness.git(target, "log", "--format=%s", "feature/a", env=dict(os.environ))
+    assert log.splitlines()[0] == "Snapshot harness state"
+    assert current(target) == "feature/b"
+
+
+def test_new_worktree_does_not_snapshot_deletions(seeded):
+    git(seeded, "worktree", "add", "-q", "-b", "feature/a", "../a")
+
+    log = harness.git(seeded, "log", "--format=%s", "develop", env=dict(os.environ))
+    assert log == "Seed\n"
+
+
+def test_rebase_with_autostash_leaves_harness_untouched(seeded):
+    git(seeded, "worktree", "add", "-q", "-b", "feature/a", "../a")
+    target = seeded.parent / "a"
+    (target / "f.txt").write_text("f")
+    git(target, "add", "f.txt")
+    git(target, "commit", "-q", "-m", "Feature")
+    (seeded / "m.txt").write_text("m")
+    git(seeded, "add", "m.txt")
+    git(seeded, "commit", "-q", "-m", "Main")
+    (target / ".gitignore").write_text("dirty\n")
+    (target / "CLAUDE.md").write_text("dirty harness")
+    env = dict(os.environ)
+    head = harness.git(target, "rev-parse", "HEAD", env=env)
+    index = harness.git(target, "ls-files", "--stage", env=env)
+    status = harness.git(target, "status", "--porcelain", env=env)
+
+    result = git(target, "-c", "rebase.autostash=true", "rebase", "main", check=False)
+
+    assert result.returncode == 0, result.stderr
+    assert harness.git(target, "rev-parse", "HEAD", env=env) == head
+    assert harness.git(target, "ls-files", "--stage", env=env) == index
+    assert harness.git(target, "status", "--porcelain", env=env) == status
