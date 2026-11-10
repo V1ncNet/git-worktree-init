@@ -69,6 +69,25 @@ Git redirects the stdout of a hook to stderr. The core writes everything to stde
 
 The prompt reads and writes the terminal, not stdin and stdout, which Git may have redirected. `/dev/tty` is opened twice, once for reading and once for writing. A single handle in `r+` mode is not seekable on a terminal, and Python's buffered text layer fails on it.
 
+## Harness
+
+The harness is a second repository for files that must not reach the code remote, such as agent instructions, plans and handoffs. It is a bare repository at `<git-common-dir>/harness.git`, so every worktree finds it no matter where it lives.
+
+Each code worktree gets its own linked-worktree admin directory `harness.git/worktrees/<id>`, written by hand rather than by `git worktree add`. Harness commands run as `git --git-dir=harness.git/worktrees/<id> --work-tree=<worktree>`. The admin directory holds `HEAD`, `index`, `commondir` and `gitdir`, so every worktree has its own harness branch and index while refs and objects are shared. The worktree root keeps only the `.git` file of the code repository.
+
+`gitdir` does not point to `<worktree>/.git`. It points to an anchor file `harness-anchor` inside the Git directory of the code worktree, that is `<git-common-dir>/harness-anchor` for the main worktree and `<git-common-dir>/worktrees/<name>/harness-anchor` for a linked one. Pointing at `<worktree>/.git` would let `git worktree repair` in the harness rewrite the `.git` file of the code worktree. With the anchor, the lifecycle follows the code repository. `git worktree prune` in the harness keeps an admin directory as long as its code worktree exists, and drops it once `git worktree remove` deleted the code admin directory. Because Git knows these admin directories, `git gc` in the harness keeps objects referenced only by a worktree index.
+
+Two alternatives were tried and rejected:
+
+- `extensions.worktreeConfig` with `core.worktree` per admin directory saves the explicit `--work-tree`, but requires `core.bare=false` in the shared config. The tool passes `--work-tree` anyway.
+- A separate Git directory per worktree with `objects/info/alternates` keeps branches apart, so every branch would have to be fetched and pushed between them. `git gc` in the shared repository may delete objects the others still need, and nothing removes the directory with the worktree.
+
+`harness.git/config` sets `core.excludesFile=/dev/null`, because a global excludes file may ignore the harness paths, and disables the global hooks for harness operations. The allowlist lives in `harness.git/info/exclude`. A tracked `.gitignore` of the code repository still applies and has precedence over `info/exclude`. Snapshots therefore list new files with `git ls-files --others --exclude-from=harness.git/info/exclude`, which skips the standard ignore files, and add them with `--force`.
+
+Submitted features are detected through the `reference-transaction` hook. A fetch, and the fetch inside `git pull --rebase`, updates `refs/remotes/origin/develop` in one transaction and calls the hook with the states `preparing`, `prepared` and `committed`. The hook acts only on `committed` and only when that ref is among the updated ones. It fires for every ref update, so the shim filters on stdin without starting a process.
+
+Never run `git worktree` subcommands against `harness.git`. `remove` and `move` would act on the path in `gitdir`, which is the Git directory of the code worktree.
+
 ## Limits
 
 - The hook itself has no flags. `git wt add` provides them.
