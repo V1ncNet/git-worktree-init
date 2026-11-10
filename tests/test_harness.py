@@ -649,3 +649,30 @@ def test_shim_ignores_unrelated_reference_transactions(harnessed, tmp_path):
         subprocess.run(["sh", str(HARNESS_HOOK), state], cwd=harnessed, env=env, input=f"{zero} {zero} {ref}\n", text=True, check=True)
 
     assert [line.split()[1:] for line in marker.read_text().splitlines()] == [["harness-hook", "reference-transaction", "committed"]]
+
+
+def register_tolerant_shim(repo, shim):
+    git(repo, "config", "hook.harness.command", f'f="{shim}"; [ -f "$f" ] || exit 0; exec "$f"')
+    for event in ("post-checkout", "pre-push", "reference-transaction"):
+        git(repo, "config", "--add", "hook.harness.event", event)
+    git(repo, "config", "worktree-init.python", sys.executable)
+
+
+def test_missing_shim_never_blocks_git(harnessed, tmp_path):
+    shim = tmp_path / "harness-hook.sh"
+    shim.write_bytes(HARNESS_HOOK.read_bytes())
+    shim.chmod(0o755)
+    register_tolerant_shim(harnessed, shim)
+    shim.unlink()
+
+    checkout = git(harnessed, "checkout", "-q", "-b", "x", check=False)
+    commit = git(harnessed, "commit", "-q", "--allow-empty", "-m", "Empty", check=False)
+
+    assert checkout.returncode == 0, checkout.stderr
+    assert commit.returncode == 0, commit.stderr
+
+
+def test_readme_registers_tolerant_shim():
+    readme = (HARNESS_HOOK.parent / "README.md").read_text()
+
+    assert '[ -f "$f" ] || exit 0; exec "$f"' in readme

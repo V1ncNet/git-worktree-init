@@ -22,6 +22,17 @@ git config --file ~/.config/git/local alias.wt '!<clone>/bin/git-wt'
 git config --file ~/.config/git/local --type=path worktree-init.python "$(command -v python3)"
 ```
 
+To use the harness, register its shim for three events as well:
+
+```sh
+git config --file ~/.config/git/local hook.harness.command 'f="<clone>/harness-hook.sh"; [ -f "$f" ] || exit 0; exec "$f"'
+git config --file ~/.config/git/local --add hook.harness.event post-checkout
+git config --file ~/.config/git/local --add hook.harness.event pre-push
+git config --file ~/.config/git/local --add hook.harness.event reference-transaction
+```
+
+The shim does nothing in a repository without `harness.git` and never fails the Git command it runs in. The registration checks that the file exists, because `reference-transaction` and `pre-push` abort Git when their hook cannot run. Checking out a branch of this repository that lacks the shim would otherwise block every commit, fetch and push on the machine.
+
 The interpreter must be Python 3.12 or newer, so check that `python3` resolves to one, or pass the path of a suitable interpreter instead. The file `~/.config/git/local` takes effect only if the global config includes it, for example with `[include] path = ~/.config/git/local`. Use `--global` instead of `--file ~/.config/git/local` to skip the include.
 
 `core.hooksPath` is deliberately not used, because it switches off every hook in `.git/hooks`. Keep `hook.jobs` at 1 so hooks of the same event run one after another.
