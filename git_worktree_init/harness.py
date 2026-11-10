@@ -5,13 +5,15 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TextIO
 
-from git_worktree_init import gitenv
+from git_worktree_init import engine, gitenv
 
 DEFAULT_BRANCH = "develop"
 REMOTE = "harness"
 ANCHOR = "harness-anchor"
 SNAPSHOT_SUBJECT = "Snapshot harness state"
 NON_INTERACTIVE_SSH = "ssh -o BatchMode=yes -o ConnectTimeout=10"
+UPSTREAM = f"refs/remotes/origin/{DEFAULT_BRANCH}"
+FEATURE_DIRS = (".superpowers/sdd/", ".claude/handoffs/")
 RUNTIME_MARKER = "# claude-code-runtime"
 ALLOWLIST = (
     "/*",
@@ -90,6 +92,9 @@ def attach(target: Path, branch: str, env: Mapping[str, str]) -> None:
 def snapshot(target: Path, env: Mapping[str, str]) -> bool:
     if not _index(target, env).exists():
         return False
+    if (_index(target, env).parent / "MERGE_HEAD").exists():
+        print(f"worktree-init: harness merge is still open in {target}, snapshot skipped", file=sys.stderr)
+        return False
     tracked = git(target, "ls-files", env=env).splitlines()
     if tracked and len(git(target, "ls-files", "--deleted", env=env).splitlines()) == len(tracked):
         print(f"worktree-init: every harness file is missing in {target}, snapshot skipped", file=sys.stderr)
@@ -126,6 +131,74 @@ def push(target: Path, env: Mapping[str, str], err: TextIO | None = None) -> boo
         print(f"worktree-init: harness push failed: {reason}", file=err or sys.stderr)
         return False
     return True
+
+
+def submitted(main: Path, env: Mapping[str, str]) -> list[str]:
+    clean = gitenv.sanitized(env)
+    upstream = gitenv.git(main, "rev-parse", "-q", "--verify", UPSTREAM, env=clean, check=False).strip()
+    if not upstream:
+        return []
+    landed = set(gitenv.git(main, "rev-list", "--first-parent", upstream, env=clean).split())
+    busy = _checked_out(main, clean)
+    result = []
+    for branch in git(main, "for-each-ref", "--format=%(refname:short)", "refs/heads", env=env).split():
+        if branch == DEFAULT_BRANCH or branch in busy:
+            continue
+        tip = gitenv.git(main, "rev-parse", "-q", "--verify", f"refs/heads/{branch}^{{commit}}", env=clean, check=False).strip()
+        if not tip or tip in landed or not _is_ancestor(main, tip, upstream, clean):
+            continue
+        if git(main, "rev-list", "-1", f"{DEFAULT_BRANCH}..{branch}", env=env).strip():
+            result.append(branch)
+    return result
+
+
+def feature_paths(main: Path, branch: str, env: Mapping[str, str]) -> list[str]:
+    base = git(main, "merge-base", DEFAULT_BRANCH, branch, env=env).strip()
+    output = git(main, "diff", "-z", "--name-only", "--diff-filter=A", base, branch, "--", *FEATURE_DIRS, env=env)
+    existing = set(git(main, "ls-tree", "-d", "--name-only", base, "--", FEATURE_DIRS[0], env=env).split())
+    paths = set()
+    for rel in filter(None, output.split("\0")):
+        ledger = "/".join(rel.split("/")[:3])
+        paths.add(ledger if rel.startswith(FEATURE_DIRS[0]) and ledger not in existing else rel)
+    return sorted(paths)
+
+
+def merge(main: Path, branch: str, env: Mapping[str, str], err: TextIO | None = None) -> bool:
+    err = err or sys.stderr
+    _, common = _code_dirs(main, gitenv.sanitized(env))
+    with engine.locked(common):
+        root = git_dir(common)
+        if (root / "MERGE_HEAD").exists():
+            print(f"worktree-init: harness merge is still open in {main}, resolve it before merging {branch}", file=err)
+            return False
+        current = git(main, "symbolic-ref", "-q", "--short", "HEAD", env=env, check=False).strip()
+        if current != DEFAULT_BRANCH:
+            print(f"worktree-init: harness of {main} is on {current or 'a detached HEAD'}, not merging {branch}", file=err)
+            return False
+        paths = feature_paths(main, branch, env)
+        try:
+            git(main, "merge", "-q", "--no-ff", "--no-commit", branch, env=env)
+        except subprocess.CalledProcessError as error:
+            if (root / "MERGE_HEAD").exists():
+                print(f"worktree-init: harness merge of {branch} has a conflict, resolve it in {main}", file=err)
+            else:
+                lines = (error.stderr or "").strip().splitlines()
+                print(f"worktree-init: harness merge of {branch} failed: {lines[-1] if lines else error.returncode}", file=err)
+            return False
+        if paths:
+            git(main, "rm", "-r", "-q", "-f", "--ignore-unmatch", "--", *paths, env=env)
+        git(main, "commit", "-q", "--no-verify", "-m", f"Merge harness branch '{branch}'", env=env)
+    print(f"worktree-init: merged harness branch {branch} into {DEFAULT_BRANCH}", file=err)
+    return True
+
+
+def _checked_out(main: Path, env: Mapping[str, str]) -> set[str]:
+    listing = gitenv.git(main, "worktree", "list", "--porcelain", env=env)
+    return {line.removeprefix("branch refs/heads/") for line in listing.splitlines() if line.startswith("branch ")}
+
+
+def _is_ancestor(main: Path, commit: str, ref: str, env: Mapping[str, str]) -> bool:
+    return gitenv.run(["git", "merge-base", "--is-ancestor", commit, ref], main, env, check=False).returncode == 0
 
 
 def _candidates(branch: str) -> tuple[str, ...]:

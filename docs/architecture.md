@@ -92,6 +92,12 @@ A new worktree has no harness index yet. Its first checkout is forced and skips 
 
 An admin directory whose anchor no longer exists belongs to a removed code worktree. It is deleted before a new one is created under the same name, and `git worktree prune` in the harness drops the others. Otherwise a reused worktree name would inherit the old index and snapshot the deletion of every harness file onto the old branch, and a branch of a removed worktree could not be checked out again. `prune` is safe here because of the anchor.
 
+A submitted feature is a code branch whose tip is reachable from `origin/develop` but not on its first-parent chain. Features land on `develop` as merge commits, so their tips sit on a second parent. The local code `develop` is not used, because pulling it after the submit would make the feature look like it had no own commits. A branch without own commits sits on the first-parent chain and is skipped, and a fast-forward submit is missed as well. `git wt harness merge` covers both. A feature whose code branch is still checked out waits, and is merged on a later fetch once its worktree is gone. A deleted code branch is never merged automatically.
+
+The merge runs under the same lock as the worktree setup, because several open worktrees may fetch at the same time. While `MERGE_HEAD` exists in the harness of the main worktree, neither another merge nor a snapshot runs there. A snapshot would commit the conflict markers. The merged harness branch is kept, locally and on the remote.
+
+The merge removes a whole ledger directory under `.superpowers/sdd/` only when the feature created it. Files a feature adds to an existing ledger directory are removed one by one.
+
 Never run `git worktree remove` or `move` against `harness.git`. `remove` and `move` would act on the path in `gitdir`, which is the Git directory of the code worktree.
 
 ## Limits

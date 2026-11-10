@@ -13,7 +13,7 @@ from git_worktree_init.context import Context
 
 
 @contextmanager
-def _locked(common_dir: Path) -> Iterator[None]:
+def locked(common_dir: Path) -> Iterator[None]:
     with open(common_dir / "worktree-init.lock", "w") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
         yield
@@ -84,7 +84,7 @@ def execute(
             if answers.get("slot") == recommended:
                 answers.pop("slot")
     values = opts.resolve(declared, explicit_values, answers, config_values)
-    with _locked(repo.common_dir):
+    with locked(repo.common_dir):
         repo = worktrees.discover(target, base_env)
         ctx.worktrees = repo.worktrees
         scanned = [w for w in repo.worktrees if not config.path_ignored(w, patterns)]

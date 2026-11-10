@@ -424,3 +424,228 @@ def test_push_never_forces(pushing, tmp_path):
 
     assert not harness.push(target, env)
     assert git(remote, "rev-parse", "feature/foo").stdout == advanced
+
+
+@pytest.fixture
+def submitting(seeded, tmp_path):
+    env = dict(os.environ)
+    origin = tmp_path / "origin.git"
+    git(tmp_path, "init", "-q", "--bare", str(origin))
+    git(seeded, "remote", "add", "origin", str(origin))
+    git(seeded, "push", "-q", "origin", "main:develop")
+    git(seeded, "fetch", "-q", "origin")
+    for event in ("pre-push", "reference-transaction"):
+        git(seeded, "config", "--add", "hook.harness.event", event)
+    other = seeded / ".superpowers" / "sdd" / "other"
+    other.mkdir(parents=True)
+    (other / "progress.md").write_text("other")
+    harness.git(seeded, "add", "-f", ".superpowers", env=env)
+    harness.git(seeded, "commit", "-q", "-m", "Add other ledger", env=env)
+    return seeded, origin
+
+
+def feature(main, branch, own_commit=True, notes="feature"):
+    env = dict(os.environ)
+    target = main.parent / branch.replace("/", "-")
+    git(main, "worktree", "add", "-q", "-b", branch, str(target))
+    if own_commit:
+        (target / f"{branch.replace('/', '-')}.txt").write_text(branch)
+        git(target, "add", ".")
+        git(target, "commit", "-q", "-m", f"Work on {branch}")
+    name = branch.split("/")[-1]
+    for rel, text in (
+        (f".superpowers/sdd/2026-11-10-{name}/progress.md", "ledger"),
+        (f".claude/handoffs/2026-11-10-{name}.md", "handoff"),
+        (f".claude/notes-{name}.md", notes),
+    ):
+        (target / rel).parent.mkdir(parents=True, exist_ok=True)
+        (target / rel).write_text(text)
+    assert harness.snapshot(target, env)
+    return target
+
+
+def submit(main, origin, branch, tmp_path):
+    clone = tmp_path / f"submit-{branch.replace('/', '-')}"
+    git(tmp_path, "clone", "-q", "-b", "develop", str(origin), str(clone))
+    git(clone, "fetch", "-q", str(main), f"{branch}:{branch}")
+    git(clone, "merge", "-q", "--no-ff", "-m", f"Merge {branch}", branch)
+    git(clone, "push", "-q", "origin", "develop")
+
+
+def advance(origin, tmp_path, name):
+    clone = tmp_path / f"advance-{name}"
+    git(tmp_path, "clone", "-q", "-b", "develop", str(origin), str(clone))
+    (clone / f"{name}.txt").write_text(name)
+    git(clone, "add", ".")
+    git(clone, "commit", "-q", "-m", name)
+    git(clone, "push", "-q", "origin", "develop")
+
+
+def remove(main, target):
+    git(main, "worktree", "remove", "--force", str(target))
+
+
+def develop_files(main):
+    return set(harness.git(main, "ls-tree", "-r", "--name-only", "develop", env=dict(os.environ)).splitlines())
+
+
+def merges(main):
+    return harness.git(main, "rev-list", "--merges", "develop", env=dict(os.environ)).split()
+
+
+def test_merge_keeps_existing_ledger_directory(submitting, tmp_path):
+    main, origin = submitting
+    target = feature(main, "feature/foo")
+    (target / ".superpowers" / "sdd" / "other" / "extra.md").write_text("extra")
+    assert harness.snapshot(target, dict(os.environ))
+    remove(main, target)
+    submit(main, origin, "feature/foo", tmp_path)
+
+    git(main, "fetch", "-q", "origin")
+
+    files = develop_files(main)
+    assert ".superpowers/sdd/other/progress.md" in files
+    assert ".superpowers/sdd/other/extra.md" not in files
+
+
+def test_submitted_feature_is_merged_no_ff(submitting, tmp_path):
+    main, origin = submitting
+    remove(main, feature(main, "feature/foo"))
+    submit(main, origin, "feature/foo", tmp_path)
+
+    result = git(main, "fetch", "-q", "origin", check=False)
+
+    assert result.returncode == 0, result.stderr
+    assert len(merges(main)) == 1
+    parents = harness.git(main, "rev-list", "--parents", "-1", "develop", env=dict(os.environ)).split()
+    assert len(parents) == 3
+    assert ".claude/notes-foo.md" in develop_files(main)
+    assert (main / ".claude" / "notes-foo.md").read_text() == "feature"
+
+
+def test_merge_removes_feature_ledger_and_handoffs(submitting, tmp_path):
+    main, origin = submitting
+    remove(main, feature(main, "feature/foo"))
+    submit(main, origin, "feature/foo", tmp_path)
+
+    git(main, "fetch", "-q", "origin")
+
+    files = develop_files(main)
+    assert ".superpowers/sdd/2026-11-10-foo/progress.md" not in files
+    assert ".claude/handoffs/2026-11-10-foo.md" not in files
+    assert ".superpowers/sdd/other/progress.md" in files
+    assert not (main / ".superpowers" / "sdd" / "2026-11-10-foo").exists()
+
+
+def test_checked_out_branch_is_not_merged(submitting, tmp_path):
+    main, origin = submitting
+    feature(main, "feature/foo")
+    submit(main, origin, "feature/foo", tmp_path)
+
+    git(main, "fetch", "-q", "origin")
+
+    assert merges(main) == []
+
+
+def test_branch_without_own_commits_is_not_merged(submitting, tmp_path):
+    main, origin = submitting
+    remove(main, feature(main, "feature/empty", own_commit=False))
+    advance(origin, tmp_path, "later")
+
+    git(main, "fetch", "-q", "origin")
+
+    assert merges(main) == []
+
+
+def test_merge_is_not_repeated(submitting, tmp_path):
+    main, origin = submitting
+    remove(main, feature(main, "feature/foo"))
+    submit(main, origin, "feature/foo", tmp_path)
+    git(main, "fetch", "-q", "origin")
+    advance(origin, tmp_path, "later")
+
+    git(main, "fetch", "-q", "origin")
+
+    assert len(merges(main)) == 1
+
+
+def test_merge_waits_until_worktree_is_gone(submitting, tmp_path):
+    main, origin = submitting
+    target = feature(main, "feature/foo")
+    submit(main, origin, "feature/foo", tmp_path)
+    git(main, "fetch", "-q", "origin")
+    git(main, "branch", "-q", "-f", "develop", "origin/develop")
+    remove(main, target)
+    advance(origin, tmp_path, "later")
+
+    git(main, "fetch", "-q", "origin")
+
+    assert len(merges(main)) == 1
+
+
+def test_open_conflict_blocks_second_merge(submitting, tmp_path):
+    main, origin = submitting
+    env = dict(os.environ)
+    remove(main, feature(main, "feature/foo"))
+    (main / ".claude").mkdir()
+    (main / ".claude" / "notes-foo.md").write_text("develop")
+    harness.git(main, "add", ".claude/notes-foo.md", env=env)
+    harness.git(main, "commit", "-q", "-m", "Conflicting note", env=env)
+    submit(main, origin, "feature/foo", tmp_path)
+    first = git(main, "fetch", "-q", "origin")
+    assert "conflict" in first.stderr
+    remove(main, feature(main, "feature/bar"))
+    submit(main, origin, "feature/bar", tmp_path)
+
+    second = git(main, "fetch", "-q", "origin")
+
+    assert merges(main) == []
+    assert "still open" in second.stderr
+    assert (main / ".git" / "harness.git" / "MERGE_HEAD").is_file()
+
+
+def test_snapshot_refuses_during_open_merge(submitting, tmp_path):
+    main, origin = submitting
+    env = dict(os.environ)
+    remove(main, feature(main, "feature/foo"))
+    (main / ".claude").mkdir()
+    (main / ".claude" / "notes-foo.md").write_text("develop")
+    harness.git(main, "add", ".claude/notes-foo.md", env=env)
+    harness.git(main, "commit", "-q", "-m", "Conflicting note", env=env)
+    submit(main, origin, "feature/foo", tmp_path)
+    git(main, "fetch", "-q", "origin")
+    head = harness.git(main, "rev-parse", "HEAD", env=env)
+
+    result = git(main, "push", "-q", "origin", "main:refs/heads/side", check=False)
+
+    assert result.returncode == 0
+    assert "merge is still open" in result.stderr
+    assert harness.git(main, "rev-parse", "HEAD", env=env) == head
+
+
+def test_manual_merge_ignores_ancestry(submitting, monkeypatch):
+    main, _ = submitting
+    remove(main, feature(main, "fix/x"))
+    monkeypatch.chdir(main)
+
+    err = io.StringIO()
+
+    result = cli.main(["harness", "merge", "fix/x"], env=dict(os.environ), err=err)
+
+    assert result == 0, err.getvalue()
+    assert len(merges(main)) == 1
+    assert ".claude/handoffs/2026-11-10-x.md" not in develop_files(main)
+
+
+def test_shim_ignores_unrelated_reference_transactions(harnessed, tmp_path):
+    marker = tmp_path / "marker"
+    fake = tmp_path / "fake-python"
+    fake.write_text(f'#!/bin/sh\necho "$@" >> "{marker}"\n')
+    fake.chmod(0o755)
+    env = {k: v for k, v in os.environ.items() if k != "GIT_DIR"} | {"WT_PYTHON": str(fake)}
+    zero = "0" * 40
+
+    for state, ref in (("prepared", "refs/remotes/origin/develop"), ("committed", "refs/heads/main"), ("committed", "refs/remotes/origin/develop")):
+        subprocess.run(["sh", str(HARNESS_HOOK), state], cwd=harnessed, env=env, input=f"{zero} {zero} {ref}\n", text=True, check=True)
+
+    assert [line.split()[1:] for line in marker.read_text().splitlines()] == [["harness-hook", "reference-transaction", "committed"]]

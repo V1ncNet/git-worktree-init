@@ -23,8 +23,9 @@ ADD = Command("git wt add [<options>] -- <git-worktree-add-args>...", with_yes=T
 REFRESH = Command("git wt refresh [<options>] [<worktree>]", with_yes=False, with_target=True)
 HARNESS_INIT = "git wt harness init --remote <url>"
 HARNESS_SYNC = "git wt harness sync"
-USAGE = f"usage: {ADD.synopsis}\n   or: {REFRESH.synopsis}\n   or: {HARNESS_INIT}\n   or: {HARNESS_SYNC}\n\n"
-HARNESS_USAGE = f"usage: {HARNESS_INIT}\n   or: {HARNESS_SYNC}\n\n"
+HARNESS_MERGE = "git wt harness merge <branch>"
+USAGE = f"usage: {ADD.synopsis}\n   or: {REFRESH.synopsis}\n   or: {HARNESS_INIT}\n   or: {HARNESS_SYNC}\n   or: {HARNESS_MERGE}\n\n"
+HARNESS_USAGE = f"usage: {HARNESS_INIT}\n   or: {HARNESS_SYNC}\n   or: {HARNESS_MERGE}\n\n"
 HELP_FLAGS = ("-h", "--help")
 USAGE_ERROR = 129
 HELP_COLUMN = 26
@@ -242,8 +243,10 @@ def _harness(argv: list[str], env: dict[str, str], err: TextIO, help_out: TextIO
         return USAGE_ERROR
     if argv == ["sync"]:
         return _harness_sync(env, err)
+    if len(argv) == 2 and argv[0] == "merge":
+        return _harness_merge(argv[1], env, err)
     if argv[:1] != ["init"]:
-        return _usage_error(err, "need the subcommand init or sync", HARNESS_USAGE)
+        return _usage_error(err, "need the subcommand init, sync or merge", HARNESS_USAGE)
     init = Parser(add_help=False, allow_abbrev=False)
     init.add_argument("--remote", required=True)
     try:
@@ -271,6 +274,10 @@ def _harness_hook(argv: list[str], env: dict[str, str], err: TextIO) -> int:
         if argv[:1] == ["pre-push"]:
             harness.snapshot(target, env)
             harness.push(target, env, err)
+        if argv[:1] == ["reference-transaction"]:
+            main = worktrees.discover(target, clean).main
+            for branch in harness.submitted(main, env):
+                harness.merge(main, branch, env, err)
     except subprocess.CalledProcessError as error:
         err.write(f"worktree-init: harness: {(error.stderr or str(error)).strip()}\n")
     except Exception as error:
@@ -286,3 +293,12 @@ def _harness_sync(env: dict[str, str], err: TextIO) -> int:
         err.write(f"worktree-init: harness: {(error.stderr or str(error)).strip()}\n")
         return 1
     return 0 if harness.push(target, env, err) else 1
+
+
+def _harness_merge(branch: str, env: dict[str, str], err: TextIO) -> int:
+    try:
+        main = worktrees.discover(Path.cwd(), gitenv.sanitized(env)).main
+        return 0 if harness.merge(main, branch, env, err) else 1
+    except subprocess.CalledProcessError as error:
+        err.write(f"worktree-init: harness: {(error.stderr or str(error)).strip()}\n")
+        return 1

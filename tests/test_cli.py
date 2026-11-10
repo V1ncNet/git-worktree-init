@@ -10,6 +10,7 @@ TOP_LEVEL_USAGE = (
     "   or: git wt refresh [<options>] [<worktree>]\n"
     "   or: git wt harness init --remote <url>\n"
     "   or: git wt harness sync\n"
+    "   or: git wt harness merge <branch>\n"
     "\n"
 )
 
