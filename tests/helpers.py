@@ -5,6 +5,7 @@ from pathlib import Path
 
 CORE = Path(__file__).resolve().parent.parent
 HOOK = CORE / "hook.sh"
+HARNESS_HOOK = CORE / "harness-hook.sh"
 GIT_WT = CORE / "bin" / "git-wt"
 WTI = CORE / "wti.py"
 EXAMPLE_PLUGIN = CORE / "examples" / "minimal_plugin.py"

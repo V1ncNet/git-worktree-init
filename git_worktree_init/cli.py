@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
-from git_worktree_init import config, engine, gitenv, worktrees
+from git_worktree_init import config, engine, gitenv, harness, worktrees
 from git_worktree_init import options as opts
 from git_worktree_init import plugin as plugins
 
@@ -21,7 +21,9 @@ class Command:
 
 ADD = Command("git wt add [<options>] -- <git-worktree-add-args>...", with_yes=True, with_target=False)
 REFRESH = Command("git wt refresh [<options>] [<worktree>]", with_yes=False, with_target=True)
-USAGE = f"usage: {ADD.synopsis}\n   or: {REFRESH.synopsis}\n\n"
+HARNESS_INIT = "git wt harness init --remote <url>"
+USAGE = f"usage: {ADD.synopsis}\n   or: {REFRESH.synopsis}\n   or: {HARNESS_INIT}\n\n"
+HARNESS_USAGE = f"usage: {HARNESS_INIT}\n\n"
 HELP_FLAGS = ("-h", "--help")
 USAGE_ERROR = 129
 HELP_COLUMN = 26
@@ -60,6 +62,10 @@ def main(
         return _add(rest, env, err, help_out)
     if command == "refresh":
         return _refresh(rest, env, out, err, help_out)
+    if command == "harness":
+        return _harness(rest, env, err, help_out)
+    if command == "harness-hook":
+        return 0
     return _usage_error(err, f"unknown subcommand: `{command}'", USAGE)
 
 
@@ -227,3 +233,25 @@ def _add(argv: list[str], env: dict[str, str], err: TextIO, help_out: TextIO) ->
         return subprocess.run(["git", "worktree", "add", *forwarded], cwd=cwd, env=child).returncode
     except KeyboardInterrupt:
         return 130
+
+
+def _harness(argv: list[str], env: dict[str, str], err: TextIO, help_out: TextIO) -> int:
+    if _wants_help(argv):
+        help_out.write(HARNESS_USAGE)
+        return USAGE_ERROR
+    if argv[:1] != ["init"]:
+        return _usage_error(err, "need the subcommand init", HARNESS_USAGE)
+    init = Parser(add_help=False, allow_abbrev=False)
+    init.add_argument("--remote", required=True)
+    try:
+        args = init.parse_args(argv[1:])
+    except UsageError as error:
+        return _usage_error(err, str(error), HARNESS_USAGE)
+    try:
+        repo = worktrees.discover(Path.cwd(), gitenv.sanitized(env))
+        harness.init(repo.main, args.remote, env)
+    except subprocess.CalledProcessError as error:
+        err.write(f"worktree-init: {(error.stderr or str(error)).strip()}\n")
+        return 1
+    err.write(f"worktree-init: harness created in {harness.git_dir(repo.common_dir)}\n")
+    return 0

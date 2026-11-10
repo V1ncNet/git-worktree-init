@@ -119,6 +119,16 @@ git config --add worktree-init.localInclude CLAUDE.local.md
 
 Each listed path is copied from the main worktree, even with `--source`. An existing file in the new worktree is never overwritten, and a path missing in the main worktree is skipped.
 
+## Harness
+
+The harness is a second repository under `<git-common-dir>/harness.git` for files that must never reach the code remote, such as `CLAUDE.md`, `.claude/`, `.superpowers/` and `docs/superpowers/`. Every worktree gets its own harness branch and index on top of the same files. Create it once in the main worktree:
+
+```sh
+git wt harness init --remote <url>
+```
+
+This adds the remote `harness`, writes the allowlist to `harness.git/info/exclude` and turns signing, the global hooks and the global excludes file off for harness operations. The lines of a `# claude-code-runtime` block in `.git/info/exclude` are excluded as well. Never run `git worktree` against `harness.git`, because `remove` and `move` would act on the Git directory of a code worktree.
+
 ## Configuration keys
 
 All keys live under `worktree-init.`.
