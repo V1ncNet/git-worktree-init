@@ -12,6 +12,10 @@ from git_worktree_init import plugin as plugins
 from git_worktree_init.context import Context
 
 
+class TeardownError(RuntimeError):
+    pass
+
+
 @contextmanager
 def locked(common_dir: Path) -> Iterator[None]:
     with open(common_dir / "worktree-init.lock", "w") as handle:
@@ -185,3 +189,51 @@ def prune(cwd: Path, env: Mapping[str, str], out: TextIO) -> bool:
     with locked(repo.common_dir):
         repo = worktrees.discover(cwd, base_env)
         return sweep(repo, loaded, gitenv.sanitized(env, loaded.sanitize_env), out)
+
+
+def _refused(target: Path, repo: worktrees.Repo, force: int, env: Mapping[str, str]) -> bool:
+    if repo.admin_dir is None:
+        return True
+    if force < 2 and (repo.admin_dir / "locked").exists():
+        return True
+    if force < 1:
+        status = gitenv.git(target, "status", "--porcelain", "--ignore-submodules=none", env=env)
+        return bool(status.strip())
+    return False
+
+
+def _known_slot(
+    target: Path, loaded: plugins.Plugin, record: records.Record | None, entries: config.Entries, env: Mapping[str, str]
+) -> tuple[int | None, dict]:
+    if record:
+        return record.slot, record.options
+    declared = opts.BUILTIN + loaded.options
+    values = opts.resolve(declared, opts.explicit(declared, env), {}, opts.from_config(declared, entries))
+    return loaded.slot_of(target), values
+
+
+def remove(target: Path, force: int, env: Mapping[str, str], out: TextIO) -> int:
+    base_env = gitenv.sanitized(env)
+    entries = config.read(target, base_env)
+    repo = worktrees.discover(target, base_env)
+    loaded = _load(repo, entries)
+    forwarded = ["git", "worktree", "remove", *["--force"] * force, str(target)]
+    with locked(repo.common_dir):
+        record = records.find(repo.common_dir, repo.admin_dir) if repo.admin_dir else None
+        torn_down = False
+        if loaded and loaded.teardown and not _refused(target, repo, force, base_env):
+            slot, values = _known_slot(target, loaded, record, entries, env)
+            if slot is not None:
+                print(f"worktree-init: remove {target} (slot {slot})", file=out)
+                run_env = gitenv.sanitized(env, loaded.sanitize_env)
+                try:
+                    loaded.teardown(teardown_context(repo, target, "remove", slot, values, run_env, out))
+                except Exception as error:
+                    raise TeardownError(str(error)) from error
+                torn_down = True
+        code = subprocess.run(forwarded, env=dict(env)).returncode
+        if code == 0 and record:
+            records.discard(repo.common_dir, record)
+        if code != 0 and torn_down:
+            print(f"worktree-init: teardown ran but the worktree stays, restore it with: git wt refresh {target}", file=out)
+        return code

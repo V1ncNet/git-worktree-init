@@ -21,16 +21,18 @@ class Command:
 
 ADD = Command("git wt add [<options>] -- <git-worktree-add-args>...", with_yes=True, with_target=False)
 REFRESH = Command("git wt refresh [<options>] [<worktree>]", with_yes=False, with_target=True)
+REMOVE = "git wt remove [-f | --force] <worktree>"
 PRUNE = "git wt prune"
 HARNESS_INIT = "git wt harness init --remote <url>"
 HARNESS_SYNC = "git wt harness sync"
 HARNESS_MERGE = "git wt harness merge <branch>"
-USAGE = f"usage: {ADD.synopsis}\n   or: {REFRESH.synopsis}\n   or: {PRUNE}\n   or: {HARNESS_INIT}\n   or: {HARNESS_SYNC}\n   or: {HARNESS_MERGE}\n\n"
+USAGE = f"usage: {ADD.synopsis}\n   or: {REFRESH.synopsis}\n   or: {REMOVE}\n   or: {PRUNE}\n   or: {HARNESS_INIT}\n   or: {HARNESS_SYNC}\n   or: {HARNESS_MERGE}\n\n"
 HARNESS_USAGE = f"usage: {HARNESS_INIT}\n   or: {HARNESS_SYNC}\n   or: {HARNESS_MERGE}\n\n"
 HELP_FLAGS = ("-h", "--help")
 USAGE_ERROR = 129
 HELP_COLUMN = 26
 YES_HELP = "never prompt, use defaults"
+FORCE_HELP = "remove a dirty worktree, twice for a locked one"
 
 
 class UsageError(Exception):
@@ -65,6 +67,8 @@ def main(
         return _add(rest, env, err, help_out)
     if command == "refresh":
         return _refresh(rest, env, out, err, help_out)
+    if command == "remove":
+        return _remove(rest, env, out, err, help_out)
     if command == "prune":
         return _prune(rest, env, out, err, help_out)
     if command == "harness":
@@ -238,6 +242,38 @@ def _add(argv: list[str], env: dict[str, str], err: TextIO, help_out: TextIO) ->
         return subprocess.run(["git", "worktree", "add", *forwarded], cwd=cwd, env=child).returncode
     except KeyboardInterrupt:
         return 130
+
+
+def _remove(argv: list[str], env: dict[str, str], out: TextIO, err: TextIO, help_out: TextIO) -> int:
+    usage = f"usage: {REMOVE}\n\n{_row('-f, --force', FORCE_HELP)}\n\n"
+    if _wants_help(argv):
+        help_out.write(usage)
+        return USAGE_ERROR
+    remove = Parser(add_help=False, allow_abbrev=False)
+    remove.add_argument("-f", "--force", action="count", default=0)
+    remove.add_argument("worktree")
+    try:
+        args = remove.parse_args(argv)
+    except UsageError as error:
+        return _usage_error(err, str(error), usage)
+    location = Path.cwd() / args.worktree
+    try:
+        target = worktrees.toplevel(location, gitenv.sanitized(env))
+    except (subprocess.CalledProcessError, FileNotFoundError, NotADirectoryError):
+        err.write(f"worktree-init: not a git worktree: {location}\n")
+        return 2
+    try:
+        return engine.remove(target, args.force, env, out)
+    except KeyboardInterrupt:
+        err.write(f"\nworktree-init: aborted, retry with: git wt remove {target}\n")
+        return 130
+    except engine.TeardownError as error:
+        err.write(f"worktree-init: teardown failed: {error}\n")
+        err.write(f"worktree-init: the worktree is kept, retry with: git wt remove {target}\n")
+        return 1
+    except (plugins.PluginError, subprocess.CalledProcessError) as error:
+        err.write(f"worktree-init: {error}\n")
+        return 1
 
 
 def _prune(argv: list[str], env: dict[str, str], out: TextIO, err: TextIO, help_out: TextIO) -> int:

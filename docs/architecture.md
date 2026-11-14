@@ -83,6 +83,18 @@ The sweep runs under the same lock as slot allocation. Afterwards the slots of a
 
 `engine.execute` and `git wt prune` run the sweep. `hook.sh` needs no change, because Python starts there anyway. A failure during create only warns, since the new worktree is not at fault.
 
+## `git wt remove` tears down first
+
+The wrapper is the only path on which teardown still sees the files of the worktree. It therefore runs teardown before `git worktree remove`, under the lock. The reverse order would lose the files, and nobody could retry a failed teardown with the worktree in place.
+
+Running teardown first means Git may still refuse the removal and leave a worktree whose database is gone. The wrapper checks the two common refusals beforehand. One is a lock without `-f -f`. The other is uncommitted or untracked changes without `-f`, which the wrapper detects with the same `git status --porcelain --ignore-submodules=none` that Git runs. In both cases the wrapper skips teardown and lets Git print its own error. The wrapper does not mirror rarer refusals. For those it names `git wt refresh` to rebuild the resources.
+
+Without a record and without a slot from `slot_of`, the wrapper skips teardown. Such a worktree was never prepared, for example after `--no-checkout` or under `ignorePaths`, so there is nothing to release.
+
+A failing teardown blocks the removal, because the worktree is the evidence that something is still allocated. Removing it anyway would leave the retry to the sweep, which no longer sees the files.
+
+The forwarded `git worktree remove` keeps the caller's environment, like `git wt add`. Only the tool's own Git calls and the plugin run sanitized.
+
 ## Harness
 
 The harness is a second repository for files that must not reach the code remote, such as agent instructions, plans and handoffs. It is a bare repository at `<git-common-dir>/harness.git`, so every worktree finds it no matter where it lives.

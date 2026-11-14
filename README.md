@@ -72,6 +72,7 @@ git wt add --slot 3 -- -b feature/foo ../proj.foo
 git -c worktree-init.slot=3 worktree add -b feature/foo ../proj.foo
 WT_SLOT=3 git worktree add -b feature/foo ../proj.foo
 git wt refresh ../proj.foo
+git wt remove ../proj.foo
 git wt prune
 ```
 
@@ -79,6 +80,7 @@ git wt prune
 - `git wt add [<options>] -- <git-worktree-add-args>...` turns the flags into `WT_*` variables for that one invocation and forwards everything after `--` to `git worktree add`. The exit code of `git worktree add` is returned. Flags cannot be abbreviated.
 - `git -c worktree-init.<key>=<value>` and `WT_<NAME>` set an option without `git wt`.
 - `git wt refresh [<options>] [<worktree>]` re-runs the preparation for an existing worktree, the current one by default. It keeps the existing slot and does not overwrite copied files that differ.
+- `git wt remove [-f | --force] <worktree>` calls the plugin's `teardown` while the files still exist, then forwards to `git worktree remove`. See "Teardown".
 - `git wt prune` calls the plugin's `teardown` for every recorded worktree that no longer exists. See "Teardown".
 
 `git wt -h`, `git wt add -h` and `git wt refresh -h` show the usage and the flags, including those of the plugin. Git answers `git wt --help` itself with the alias definition, so use `-h`. Help and usage errors exit with 129, like Git.
@@ -184,7 +186,7 @@ A plugin is a Python file, referenced by `worktree-init.plugin`. It may define:
 | --- | --- |
 | `main`, `target`, `source`, `common_dir` | Paths of the main worktree, the new worktree, the copy source and the common git dir |
 | `name` | Directory name of the target |
-| `slot`, `mode` | Resolved slot, and `create`, `refresh` or `prune` |
+| `slot`, `mode` | Resolved slot, and `create`, `refresh`, `remove` or `prune` |
 | `worktrees` | Paths of all usable worktrees |
 | `option(name)` | Resolved value of an option |
 | `info(message)` | Prints an indented line to stderr |
@@ -203,6 +205,16 @@ The methods that change files return whether they changed anything. `examples/mi
 Git runs no hook when a worktree goes away, whether through `git worktree remove`, `git worktree prune` or a deleted directory. The tool therefore keeps a record for each worktree it prepares with a plugin, under `<git-common-dir>/worktree-init/records/`. A record holds the slot, the path and the resolved options. The tool writes it before `apply`, so teardown also works for a worktree whose preparation failed halfway.
 
 The sweep calls `teardown(ctx)` with `ctx.mode` set to `prune` for every record whose worktree no longer exists. It deletes the record once teardown returns. `git wt prune` runs the sweep, and so does every create and refresh. A worktree moved with `git worktree move` counts as existing, and so does a locked one.
+
+`git wt remove` calls teardown with `ctx.mode` set to `remove` before Git deletes anything. The files are still there, so teardown may read them or run `docker compose down` in the target. Slot and options come from the record. A worktree without a record falls back to `slot_of` and the configured options, for example one created before the plugin had a teardown. If neither gives a slot, `git wt remove` skips teardown, so `ctx.slot` is always a number. Git refuses to remove a dirty or locked worktree. In that case `git wt remove` skips teardown and Git prints its usual error. `git wt remove` passes `--force` and `-f -f` on to Git.
+
+A failing teardown blocks the removal. The worktree and its record stay unchanged, and the message names the retry:
+
+```sh
+git wt remove <worktree>
+```
+
+To give up on teardown, remove the worktree with `git worktree remove` and run `git wt prune` later. If Git refuses the removal after teardown ran, the worktree stays without its resources. `git wt refresh <worktree>` sets them up again.
 
 In mode `prune` the files of the worktree are gone, and the path may already hold a new worktree. Teardown may rely only on `ctx.slot`, `ctx.name`, the path `ctx.target` and `ctx.option(name)`. `ctx.run` starts in the main worktree. Do not use `write`, `copy`, `copy_tree`, `link` or `remove`, because they act on the target path. For a plugin without `teardown`, the sweep deletes the records and calls nothing.
 
