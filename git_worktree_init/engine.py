@@ -6,10 +6,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TextIO
 
-from git_worktree_init import config, gitenv, include, prompt, slots, worktrees
+from git_worktree_init import config, gitenv, include, prompt, records, slots, worktrees
 from git_worktree_init import options as opts
 from git_worktree_init import plugin as plugins
 from git_worktree_init.context import Context
+
+
+class TeardownError(RuntimeError):
+    pass
 
 
 @contextmanager
@@ -51,14 +55,16 @@ def execute(
     base_env = gitenv.sanitized(env)
     entries = config.read(target, base_env)
     repo = worktrees.discover(target, base_env)
-    plugin_path = plugins.locate(repo.main, entries)
-    loaded = plugins.load(plugin_path) if plugin_path else None
+    loaded = _load(repo, entries)
     run_env = gitenv.sanitized(env, loaded.sanitize_env if loaded else ())
     declared = opts.BUILTIN + (loaded.options if loaded else ())
     slot_of = loaded.slot_of if loaded else _no_slot
     patterns = config.ignore_patterns(entries)
     reserved = slots.parse_reserved(config.last(entries, "reservedSlots"))
+    record = records.find(repo.common_dir, repo.admin_dir) if repo.admin_dir else None
     own = slot_of(target)
+    if own is None and record:
+        own = record.slot
     ctx = Context(
         main=repo.main,
         target=target,
@@ -75,7 +81,7 @@ def execute(
         tty = tty_opener()
         if tty is not None:
             scanned = [w for w in repo.worktrees if not config.path_ignored(w, patterns)]
-            recommended = slots.allocate(slots.used(slot_of, scanned, target), reserved)
+            recommended = slots.allocate(slots.used(slot_of, scanned, target) | _pending(repo, record), reserved)
             defaults = opts.resolve(declared, {}, {}, config_values)
             if defaults["slot"] is None:
                 defaults["slot"] = recommended
@@ -87,8 +93,10 @@ def execute(
     with locked(repo.common_dir):
         repo = worktrees.discover(target, base_env)
         ctx.worktrees = repo.worktrees
+        if loaded:
+            sweep(repo, loaded, run_env, out)
         scanned = [w for w in repo.worktrees if not config.path_ignored(w, patterns)]
-        used = slots.used(slot_of, scanned, target)
+        used = slots.used(slot_of, scanned, target) | _pending(repo, record)
         if values["slot"] is None:
             values["slot"] = own if own is not None else slots.allocate(used, reserved)
         elif values["slot"] != own:
@@ -96,6 +104,8 @@ def execute(
         ctx.slot = values["slot"]
         ctx.source = _source(values["source"], repo, base_env)
         ctx.options = values
+        if loaded and repo.admin_dir:
+            records.write(repo.common_dir, repo.admin_dir, ctx.slot, target, values)
         print(f"worktree-init: {mode} {target} (slot {ctx.slot}, source {ctx.source})", file=out)
         spec = include.include_file(ctx.source, repo.main)
         overwrite = mode == "create" and own is None
@@ -113,3 +123,117 @@ def execute(
             print("Next steps:", file=out)
             for step in steps:
                 print(f"  - {step}", file=out)
+
+
+def _load(repo: worktrees.Repo, entries: config.Entries) -> plugins.Plugin | None:
+    path = plugins.locate(repo.main, entries)
+    return plugins.load(path) if path else None
+
+
+def _pending(repo: worktrees.Repo, own: records.Record | None) -> dict[int, Path]:
+    return {
+        record.slot: record.target
+        for record in records.all_records(repo.common_dir)
+        if record.slot is not None and (own is None or record.key != own.key)
+    }
+
+
+def teardown_context(
+    repo: worktrees.Repo,
+    target: Path,
+    mode: str,
+    slot: int | None,
+    options: dict,
+    env: dict[str, str],
+    out: TextIO,
+) -> Context:
+    return Context(
+        main=repo.main,
+        target=target,
+        common_dir=repo.common_dir,
+        mode=mode,
+        env=env,
+        worktrees=repo.worktrees,
+        slot=slot,
+        options=options,
+        out=out,
+    )
+
+
+def sweep(repo: worktrees.Repo, loaded: plugins.Plugin, env: dict[str, str], out: TextIO) -> bool:
+    clean = True
+    for record in records.all_records(repo.common_dir):
+        if records.alive(repo.common_dir, record):
+            continue
+        if loaded.teardown:
+            print(f"worktree-init: prune {record.target} (slot {record.slot})", file=out)
+            try:
+                loaded.teardown(
+                    teardown_context(repo, record.target, "prune", record.slot, record.options, env, out)
+                )
+            except Exception as error:
+                print(f"worktree-init: teardown failed: {error}", file=out)
+                print("worktree-init: the record is kept, retry with: git wt prune", file=out)
+                clean = False
+                continue
+        records.discard(repo.common_dir, record)
+    return clean
+
+
+def prune(cwd: Path, env: Mapping[str, str], out: TextIO) -> bool:
+    base_env = gitenv.sanitized(env)
+    repo = worktrees.discover(cwd, base_env)
+    loaded = _load(repo, config.read(cwd, base_env))
+    if not loaded:
+        return True
+    with locked(repo.common_dir):
+        repo = worktrees.discover(cwd, base_env)
+        return sweep(repo, loaded, gitenv.sanitized(env, loaded.sanitize_env), out)
+
+
+def _refused(target: Path, repo: worktrees.Repo, force: int, env: Mapping[str, str]) -> bool:
+    if repo.admin_dir is None:
+        return True
+    if force < 2 and (repo.admin_dir / "locked").exists():
+        return True
+    if force < 1:
+        status = gitenv.git(target, "status", "--porcelain", "--ignore-submodules=none", env=env)
+        return bool(status.strip())
+    return False
+
+
+def _known_slot(
+    target: Path, loaded: plugins.Plugin, record: records.Record | None, entries: config.Entries, env: Mapping[str, str]
+) -> tuple[int | None, dict]:
+    if record:
+        return record.slot, record.options
+    declared = opts.BUILTIN + loaded.options
+    values = opts.resolve(declared, opts.explicit(declared, env), {}, opts.from_config(declared, entries))
+    return loaded.slot_of(target), values
+
+
+def remove(target: Path, force: int, env: Mapping[str, str], out: TextIO) -> int:
+    base_env = gitenv.sanitized(env)
+    entries = config.read(target, base_env)
+    repo = worktrees.discover(target, base_env)
+    loaded = _load(repo, entries)
+    forwarded = ["git", "worktree", "remove", *["--force"] * force, str(target)]
+    with locked(repo.common_dir):
+        record = records.find(repo.common_dir, repo.admin_dir) if repo.admin_dir else None
+        torn_down = False
+        if loaded and loaded.teardown and not _refused(target, repo, force, base_env):
+            slot, values = _known_slot(target, loaded, record, entries, env)
+            if slot is not None:
+                print(f"worktree-init: remove {target} (slot {slot})", file=out)
+                run_env = gitenv.sanitized(env, loaded.sanitize_env)
+                try:
+                    loaded.teardown(teardown_context(repo, target, "remove", slot, values, run_env, out))
+                except Exception as error:
+                    raise TeardownError(str(error)) from error
+                torn_down = True
+        code = subprocess.run(forwarded, env=dict(env)).returncode
+        if code == 0 and record:
+            records.discard(repo.common_dir, record)
+        if code != 0 and torn_down:
+            print(f"worktree-init: teardown ran but the worktree stays, restore it with: git wt refresh {target}", file=out)
+        return code

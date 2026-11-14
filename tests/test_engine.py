@@ -1,5 +1,6 @@
 import io
 import os
+import shutil
 
 import pytest
 
@@ -222,3 +223,14 @@ def test_refresh_reports_setup_errors(configured, monkeypatch):
 
     assert code == 2
     assert "worktree-init: boom" in err.getvalue()
+
+
+def test_example_plugin_releases_port_after_deletion(configured):
+    repo, target = configured
+    git(repo, "config", "worktree-init.port-base", "9000")
+    engine.execute(target, "create", dict(os.environ), out=io.StringIO())
+    shutil.rmtree(target)
+    out = io.StringIO()
+
+    assert engine.prune(repo, dict(os.environ), out)
+    assert "released port 9001" in out.getvalue()

@@ -42,7 +42,8 @@ class Context:
         check: bool = True,
         capture: bool = False,
     ) -> subprocess.CompletedProcess[str]:
-        return gitenv.run(cmd, cwd or self.target, self.env, check=check, capture=capture)
+        default = self.main if self.mode == "prune" else self.target
+        return gitenv.run(cmd, cwd or default, self.env, check=check, capture=capture)
 
     def link(self, rel: str, anchor: Path) -> bool:
         source = anchor / rel
