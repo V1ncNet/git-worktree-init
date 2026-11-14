@@ -15,10 +15,12 @@ flowchart TD
     G --> I[resolve options]
     H --> I
     I --> J[lock]
-    J --> K[re-read worktree list, allocate or validate slot]
+    J --> J2[sweep removed worktrees]
+    J2 --> K[re-read worktree list, allocate or validate slot]
     K --> L[copy .worktreeinclude files]
     L --> L2[copy localInclude files from main]
-    L2 --> M[plugin.apply]
+    L2 --> L3[write record]
+    L3 --> M[plugin.apply]
     M --> N[unlock]
     N --> O[plugin.next_steps]
 ```
@@ -69,6 +71,18 @@ Git redirects the stdout of a hook to stderr. The core writes everything to stde
 
 The prompt reads and writes the terminal, not stdin and stdout, which Git may have redirected. `/dev/tty` is opened twice, once for reading and once for writing. A single handle in `r+` mode is not seekable on a terminal, and Python's buffered text layer fails on it.
 
+## Records and sweep
+
+Git offers no event for removing a worktree. No hook runs for `git worktree remove`, `git worktree prune`, the worktree pruning in `git gc` or a deleted directory, not even `reference-transaction`. Several tools create and remove worktrees, so no wrapper can catch every removal. The tool instead remembers what it prepared and later checks what is gone.
+
+A record is a JSON file `<git-common-dir>/worktree-init/records/<key>.json` with the slot, the target path, the admin directory name and the resolved options. The tool also writes the random key to a token file `worktree-init-record` in the admin directory `<git-common-dir>/worktrees/<name>`. The record itself cannot live there, because removing the worktree deletes the admin directory.
+
+A record is alive while the admin directory holds its token and Git would keep the worktree. Git keeps a worktree whose admin directory is locked or whose `gitdir` points to an existing path. `git worktree move` keeps the admin directory, so the record follows the worktree. The token also detects a reused name or path. A new admin directory starts without a token, so the old record is dead even though a worktree exists at the same place again. Comparing paths would miss this.
+
+The sweep runs under the same lock as slot allocation. Afterwards the slots of all remaining records count as used. A record whose teardown failed keeps its slot, and a new worktree cannot collide with a database or port that still exists. A record also gives the slot of a worktree whose `slot_of` finds nothing, for example after a failed `apply`.
+
+`engine.execute` and `git wt prune` run the sweep. `hook.sh` needs no change, because Python starts there anyway. A failure during create only warns, since the new worktree is not at fault.
+
 ## Harness
 
 The harness is a second repository for files that must not reach the code remote, such as agent instructions, plans and handoffs. It is a bare repository at `<git-common-dir>/harness.git`, so every worktree finds it no matter where it lives.
@@ -108,3 +122,5 @@ Never run `git worktree remove` or `move` against `harness.git`. `remove` and `m
 - The registration is global. The cost of the shim is described under "Shim filters".
 - All messages go to stderr.
 - `/dev/tty` is opened twice, once for reading and once for writing, because a single `r+` handle is not seekable on a terminal.
+- `git wt refresh --slot <m>` rewrites the record with the new slot. Teardown never sees the old slot, so its resources stay.
+- Git treats a missing directory as removed unless the worktree is locked. A worktree on an unmounted drive therefore gets torn down. `git worktree lock` prevents that.

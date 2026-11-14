@@ -23,3 +23,7 @@ def apply(ctx) -> None:
 
 def next_steps(ctx) -> list[str]:
     return [f"Start the app on port {int(ctx.option('port_base')) + ctx.slot}"]
+
+
+def teardown(ctx) -> None:
+    ctx.info(f"released port {int(ctx.option('port_base')) + ctx.slot}")

@@ -22,6 +22,7 @@ class Plugin:
     slot_of: Callable[[Path], int | None]
     apply: Callable[[Any], None]
     next_steps: Callable[[Any], list[str]] | None
+    teardown: Callable[[Any], None] | None = None
 
 
 def locate(main: Path, entries: config.Entries) -> Path | None:
@@ -57,6 +58,7 @@ def load(path: Path) -> Plugin:
         if option.name in builtin_names:
             raise PluginError(f"{path}: option {option.name} is reserved")
     next_steps = getattr(module, "next_steps", None)
+    teardown = getattr(module, "teardown", None)
     return Plugin(
         path=path,
         options=options,
@@ -64,4 +66,5 @@ def load(path: Path) -> Plugin:
         slot_of=module.slot_of,
         apply=module.apply,
         next_steps=next_steps if callable(next_steps) else None,
+        teardown=teardown if callable(teardown) else None,
     )
