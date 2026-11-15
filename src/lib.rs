@@ -3,4 +3,7 @@ pub mod config;
 pub mod error;
 pub mod gitenv;
 pub mod glob;
+pub mod options;
+pub mod records;
+pub mod slots;
 pub mod worktrees;
