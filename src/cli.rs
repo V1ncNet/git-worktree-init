@@ -30,9 +30,12 @@ pub const USAGE: &str = "usage: git wt add [<options>] -- <git-worktree-add-args
 ";
 
 const HELP_FLAGS: [&str; 2] = ["-h", "--help"];
-const NOT_YET_PORTED: [&str; 4] = ["remove", "prune", "harness", "harness-hook"];
+const NOT_YET_PORTED: [&str; 2] = ["harness", "harness-hook"];
 const HELP_COLUMN: usize = 26;
 const YES_HELP: &str = "never prompt, use defaults";
+const FORCE_HELP: &str = "remove a dirty worktree, twice for a locked one";
+const REMOVE_SYNOPSIS: &str = "git wt remove [-f | --force] <worktree>";
+const PRUNE_USAGE: &str = "usage: git wt prune\n\n";
 const SETUP_FAILED: i32 = 2;
 
 pub struct Command {
@@ -77,6 +80,8 @@ pub fn main(argv: Vec<String>) -> i32 {
         "hook" => hook::run(rest, &gitenv::process_env()),
         "add" => add(rest, &gitenv::process_env()),
         "refresh" => refresh(rest, &gitenv::process_env()),
+        "remove" => remove(rest, &gitenv::process_env()),
+        "prune" => prune(rest, &gitenv::process_env()),
         _ if NOT_YET_PORTED.contains(&command) => usage_error("not implemented yet", USAGE),
         _ => usage_error(&format!("unknown subcommand: `{command}'"), USAGE),
     }
@@ -184,6 +189,109 @@ fn refresh(args: &[String], env: &Env) -> i32 {
     let mut child_env = env.clone();
     child_env.extend(flag_env(&options, &flags, &cwd));
     engine::execute_or_explain(&target, "refresh", &child_env)
+}
+
+fn remove_usage() -> String {
+    format!(
+        "usage: {REMOVE_SYNOPSIS}\n\n{}\n\n",
+        row("-f, --force", FORCE_HELP)
+    )
+}
+
+fn parse_remove(args: &[String]) -> Result<(u8, String)> {
+    let mut force: u8 = 0;
+    let mut worktree: Vec<&str> = Vec::new();
+    let mut unrecognized: Vec<&str> = Vec::new();
+    let mut only_positional = false;
+    for arg in args {
+        if only_positional || !is_option_like(arg) {
+            worktree.push(arg);
+        } else if arg == "--" {
+            only_positional = true;
+        } else if arg == "--force" {
+            force = force.saturating_add(1);
+        } else if let Some(value) = arg.strip_prefix("--force=") {
+            reject_inline("-f/--force", Some(value))?;
+        } else if is_short_force(arg) {
+            let flags = u8::try_from(arg.len() - 1).unwrap_or(u8::MAX);
+            force = force.saturating_add(flags);
+        } else {
+            unrecognized.push(arg);
+        }
+    }
+    let Some((first, extra)) = worktree.split_first() else {
+        return Err(usage(
+            "the following arguments are required: worktree".into(),
+        ));
+    };
+    unrecognized.extend(extra);
+    if !unrecognized.is_empty() {
+        return Err(usage(format!(
+            "unrecognized arguments: {}",
+            unrecognized.join(" ")
+        )));
+    }
+    Ok((force, (*first).to_string()))
+}
+
+fn is_short_force(arg: &str) -> bool {
+    arg.len() > 1 && arg.starts_with('-') && arg[1..].chars().all(|flag| flag == 'f')
+}
+
+fn remove(args: &[String], env: &Env) -> i32 {
+    if wants_help(args) {
+        print!("{}", remove_usage());
+        return USAGE_ERROR;
+    }
+    let (force, worktree) = match parse_remove(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return usage_error(&error.to_string(), &remove_usage()),
+    };
+    let Ok(cwd) = std::env::current_dir() else {
+        eprintln!("worktree-init: the current directory is gone");
+        return SETUP_FAILED;
+    };
+    let location = cwd.join(worktree);
+    let Ok(target) = worktrees::toplevel(&location, &gitenv::sanitized(env, &[])) else {
+        eprintln!("worktree-init: not a git worktree: {}", location.display());
+        return SETUP_FAILED;
+    };
+    match engine::remove(&target, force, env) {
+        Ok(code) => code,
+        Err(Error::Teardown(message)) => {
+            eprintln!("worktree-init: teardown failed: {message}");
+            eprintln!(
+                "worktree-init: the worktree is kept, retry with: git wt remove {}",
+                target.display()
+            );
+            1
+        }
+        Err(error) => {
+            eprintln!("worktree-init: {error}");
+            1
+        }
+    }
+}
+
+fn prune(args: &[String], env: &Env) -> i32 {
+    if wants_help(args) {
+        print!("{PRUNE_USAGE}");
+        return USAGE_ERROR;
+    }
+    if !args.is_empty() {
+        return usage_error("prune takes no arguments", PRUNE_USAGE);
+    }
+    let Ok(cwd) = std::env::current_dir() else {
+        eprintln!("worktree-init: the current directory is gone");
+        return SETUP_FAILED;
+    };
+    match engine::prune(&cwd, env) {
+        Ok(clean) => i32::from(!clean),
+        Err(error) => {
+            eprintln!("worktree-init: {error}");
+            1
+        }
+    }
 }
 
 pub fn declared(cwd: &Path, env: &Env) -> Result<Vec<OptionSpec>> {

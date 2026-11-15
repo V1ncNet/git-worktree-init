@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use serde_json::Value;
 
@@ -309,7 +311,15 @@ pub fn sweep(repo: &Repo, plugin: &mut Plugin, env: &Env) -> Result<bool> {
                 .slot
                 .map_or_else(|| "None".to_string(), |slot| slot.to_string());
             eprintln!("worktree-init: prune {target} (slot {slot})");
-            if let Err(error) = plugin.teardown(&teardown_context(repo, &record, env)) {
+            let ctx = teardown_context(
+                repo,
+                &record.target,
+                "prune",
+                record.slot,
+                &record.options,
+                env,
+            );
+            if let Err(error) = plugin.teardown(&ctx) {
                 eprintln!("worktree-init: teardown failed: {error}");
                 eprintln!("worktree-init: the record is kept, retry with: git wt prune");
                 clean = false;
@@ -321,16 +331,143 @@ pub fn sweep(repo: &Repo, plugin: &mut Plugin, env: &Env) -> Result<bool> {
     Ok(clean)
 }
 
-fn teardown_context(repo: &Repo, record: &Record, env: &Env) -> Ctx {
+fn teardown_context(
+    repo: &Repo,
+    target: &Path,
+    mode: &str,
+    slot: Option<u32>,
+    options: &Values,
+    env: &Env,
+) -> Ctx {
     Ctx {
         main: repo.main.clone(),
-        target: record.target.clone(),
+        target: target.to_path_buf(),
         common_dir: repo.common_dir.clone(),
-        mode: "prune".into(),
+        mode: mode.into(),
         env: env.clone(),
         worktrees: repo.worktrees.clone(),
         source: None,
-        slot: record.slot,
-        options: record.options.clone(),
+        slot,
+        options: options.clone(),
     }
+}
+
+pub fn prune(cwd: &Path, env: &Env) -> Result<bool> {
+    let base_env = gitenv::sanitized(env, &[]);
+    let repo = worktrees::discover(cwd, &base_env)?;
+    let entries = config::read(cwd, &base_env)?;
+    let Some(mut plugin) = load(&repo, &entries, &base_env)? else {
+        return Ok(true);
+    };
+    let _lock = locked(&repo.common_dir)?;
+    let repo = worktrees::discover(cwd, &base_env)?;
+    let run_env = gitenv::sanitized(env, &plugin.sanitize_env);
+    sweep(&repo, &mut plugin, &run_env)
+}
+
+fn refused(target: &Path, repo: &Repo, force: u8, env: &Env) -> Result<bool> {
+    let Some(admin_dir) = &repo.admin_dir else {
+        return Ok(true);
+    };
+    if force < 2 && admin_dir.join("locked").exists() {
+        return Ok(true);
+    }
+    if force < 1 {
+        let status = gitenv::git(
+            target,
+            &["status", "--porcelain", "--ignore-submodules=none"],
+            env,
+        )?;
+        return Ok(!status.trim().is_empty());
+    }
+    Ok(false)
+}
+
+fn known_slot(
+    target: &Path,
+    plugin: &mut Plugin,
+    record: Option<&Record>,
+    entries: &Entries,
+    env: &Env,
+) -> Result<(Option<u32>, Values)> {
+    if let Some(record) = record {
+        return Ok((record.slot, record.options.clone()));
+    }
+    let declared = declared_options(Some(plugin));
+    let explicit = options::explicit(&declared, env)?;
+    let configured = options::from_config(&declared, entries)?;
+    let values = options::resolve(&declared, &explicit, &Values::new(), &configured);
+    Ok((plugin.slot_of(target)?, values))
+}
+
+pub fn remove(target: &Path, force: u8, env: &Env) -> Result<i32> {
+    interrupt::on_interrupt(format!(
+        "\nworktree-init: aborted, retry with: git wt remove {}\n",
+        target.display()
+    ));
+    let base_env = gitenv::sanitized(env, &[]);
+    let entries = config::read(target, &base_env)?;
+    let repo = worktrees::discover(target, &base_env)?;
+    let mut plugin = load(&repo, &entries, &base_env)?;
+    if let Some(plugin) = &plugin {
+        interrupt::watch_child(plugin.pid(), plugin.request_fd());
+    }
+    let _lock = locked(&repo.common_dir)?;
+    let record = match &repo.admin_dir {
+        Some(admin_dir) => records::find(&repo.common_dir, admin_dir)?,
+        None => None,
+    };
+    let torn_down = match plugin.as_mut().filter(|plugin| plugin.has_teardown) {
+        Some(plugin) if !refused(target, &repo, force, &base_env)? => {
+            tear_down_before_removal(target, plugin, &repo, record.as_ref(), &entries, env)?
+        }
+        _ => false,
+    };
+    let code = forward_worktree_remove(target, force, env)?;
+    if code == 0
+        && let Some(record) = &record
+    {
+        records::discard(&repo.common_dir, record)?;
+    }
+    if code != 0 && torn_down {
+        eprintln!(
+            "worktree-init: teardown ran but the worktree stays, restore it with: git wt refresh {}",
+            target.display()
+        );
+    }
+    Ok(code)
+}
+
+fn tear_down_before_removal(
+    target: &Path,
+    plugin: &mut Plugin,
+    repo: &Repo,
+    record: Option<&Record>,
+    entries: &Entries,
+    env: &Env,
+) -> Result<bool> {
+    let (slot, values) = known_slot(target, plugin, record, entries, env)?;
+    let Some(slot) = slot else {
+        return Ok(false);
+    };
+    eprintln!("worktree-init: remove {} (slot {slot})", target.display());
+    let run_env = gitenv::sanitized(env, &plugin.sanitize_env);
+    let ctx = teardown_context(repo, target, "remove", Some(slot), &values, &run_env);
+    plugin
+        .teardown(&ctx)
+        .map_err(|error| Error::Teardown(error.to_string()))?;
+    Ok(true)
+}
+
+fn forward_worktree_remove(target: &Path, force: u8, env: &Env) -> Result<i32> {
+    let status = Command::new("git")
+        .args(["worktree", "remove"])
+        .args((0..force).map(|_| "--force"))
+        .arg(target)
+        .env_clear()
+        .envs(env)
+        .status()?;
+    Ok(status
+        .code()
+        .unwrap_or_else(|| 128 + status.signal().unwrap_or(0)))
 }
