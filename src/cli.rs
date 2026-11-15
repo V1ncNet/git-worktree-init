@@ -309,6 +309,7 @@ fn harness_command(args: &[String], env: &Env) -> i32 {
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
     match words.as_slice() {
         ["sync"] => harness_sync(env),
+        ["merge", branch] => harness_merge(branch, env),
         ["init", rest @ ..] => match parse_init(rest) {
             Ok(remote) => harness_init(&remote, env),
             Err(error) => usage_error(&error.to_string(), HARNESS_USAGE),
@@ -368,6 +369,14 @@ fn harness_sync(env: &Env) -> i32 {
             harness::push(&target, env)
         });
     harness_exit(pushed)
+}
+
+fn harness_merge(branch: &str, env: &Env) -> i32 {
+    let merged = std::env::current_dir()
+        .map_err(Error::from)
+        .and_then(|cwd| worktrees::discover(&cwd, &gitenv::sanitized(env, &[])))
+        .and_then(|repo| harness::merge(&repo.main, branch, env));
+    harness_exit(merged)
 }
 
 fn harness_exit(outcome: Result<bool>) -> i32 {
@@ -487,7 +496,12 @@ fn run_harness_event(event: HarnessEvent, cwd: &Path, env: &Env) -> Result<()> {
             harness::snapshot(&target, env)?;
             harness::push(&target, env)?;
         }
-        HarnessEvent::ReferenceTransaction => {}
+        HarnessEvent::ReferenceTransaction => {
+            let main = worktrees::discover(&target, &clean)?.main;
+            for branch in harness::submitted(&main, env)? {
+                harness::merge(&main, &branch, env)?;
+            }
+        }
     }
     Ok(())
 }

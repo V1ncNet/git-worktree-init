@@ -1,7 +1,9 @@
+use std::collections::{BTreeSet, HashSet};
 use std::fs::{self, OpenOptions};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
+use crate::engine;
 use crate::error::{Error, Result};
 use crate::gitenv::{self, Env};
 use crate::worktrees;
@@ -153,20 +155,176 @@ pub fn push(target: &Path, env: &Env) -> Result<bool> {
     ) {
         Ok(_) => Ok(true),
         Err(Error::Git { code, stderr, .. }) => {
-            let reason = stderr.trim().lines().last().map_or_else(
-                || {
-                    format!(
-                        "exit {}",
-                        code.map_or("signal".into(), |code| code.to_string())
-                    )
-                },
-                str::to_string,
-            );
+            let reason = last_line(&stderr)
+                .map_or_else(|| format!("exit {}", exit_code(code)), str::to_string);
             eprintln!("worktree-init: harness push failed: {reason}");
             Ok(false)
         }
         Err(error) => Err(error),
     }
+}
+
+pub fn submitted(main: &Path, env: &Env) -> Result<Vec<String>> {
+    let clean = gitenv::sanitized(env, &[]);
+    let upstream = verified(main, UPSTREAM, &clean)?;
+    if upstream.is_empty() {
+        return Ok(Vec::new());
+    }
+    let first_parents = gitenv::git(main, &["rev-list", "--first-parent", &upstream], &clean)?;
+    let landed: HashSet<&str> = first_parents.split_whitespace().collect();
+    let busy = checked_out(main, &clean)?;
+    let heads = git(
+        main,
+        &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
+        env,
+    )?;
+    let mut result = Vec::new();
+    for branch in heads.split_whitespace() {
+        if branch == DEFAULT_BRANCH || busy.contains(branch) {
+            continue;
+        }
+        let tip = verified(main, &format!("refs/heads/{branch}^{{commit}}"), &clean)?;
+        if tip.is_empty()
+            || landed.contains(tip.as_str())
+            || !is_ancestor(main, &tip, &upstream, &clean)?
+        {
+            continue;
+        }
+        if has_own_commits(main, branch, env)? {
+            result.push(branch.to_string());
+        }
+    }
+    Ok(result)
+}
+
+pub fn feature_paths(main: &Path, branch: &str, env: &Env) -> Result<Vec<String>> {
+    let base = git(main, &["merge-base", DEFAULT_BRANCH, branch], env)?;
+    let base = base.trim();
+    let mut diff = vec![
+        "diff",
+        "-z",
+        "--name-only",
+        "--diff-filter=A",
+        base,
+        branch,
+        "--",
+    ];
+    diff.extend(FEATURE_DIRS);
+    let added = git(main, &diff, env)?;
+    let ledgers = FEATURE_DIRS[0];
+    let tree = git(
+        main,
+        &["ls-tree", "-d", "--name-only", base, "--", ledgers],
+        env,
+    )?;
+    let existing: HashSet<&str> = tree.split_whitespace().collect();
+    let paths: BTreeSet<String> = added
+        .split('\0')
+        .filter(|rel| !rel.is_empty())
+        .map(|rel| {
+            let ledger = rel.splitn(4, '/').take(3).collect::<Vec<_>>().join("/");
+            if rel.starts_with(ledgers) && !existing.contains(ledger.as_str()) {
+                ledger
+            } else {
+                rel.to_string()
+            }
+        })
+        .collect();
+    Ok(paths.into_iter().collect())
+}
+
+pub fn merge(main: &Path, branch: &str, env: &Env) -> Result<bool> {
+    let (_, common) = code_dirs(main, &gitenv::sanitized(env, &[]))?;
+    let merged = {
+        let _lock = engine::locked(&common)?;
+        merge_locked(main, branch, &git_dir(&common), env)?
+    };
+    if merged {
+        eprintln!("worktree-init: merged harness branch {branch} into {DEFAULT_BRANCH}");
+    }
+    Ok(merged)
+}
+
+fn merge_locked(main: &Path, branch: &str, root: &Path, env: &Env) -> Result<bool> {
+    let shown = main.display();
+    if root.join("MERGE_HEAD").exists() {
+        eprintln!(
+            "worktree-init: harness merge is still open in {shown}, resolve it before merging {branch}"
+        );
+        return Ok(false);
+    }
+    let current = current_branch(main, env)?;
+    if current != DEFAULT_BRANCH {
+        let on = if current.is_empty() {
+            "a detached HEAD"
+        } else {
+            &current
+        };
+        eprintln!("worktree-init: harness of {shown} is on {on}, not merging {branch}");
+        return Ok(false);
+    }
+    let paths = feature_paths(main, branch, env)?;
+    match git(
+        main,
+        &["merge", "-q", "--no-ff", "--no-commit", branch],
+        env,
+    ) {
+        Ok(_) => {}
+        Err(Error::Git { code, stderr, .. }) => {
+            if root.join("MERGE_HEAD").exists() {
+                eprintln!(
+                    "worktree-init: harness merge of {branch} has a conflict, resolve it in {shown}"
+                );
+            } else {
+                let reason = last_line(&stderr).map_or_else(|| exit_code(code), str::to_string);
+                eprintln!("worktree-init: harness merge of {branch} failed: {reason}");
+            }
+            return Ok(false);
+        }
+        Err(error) => return Err(error),
+    }
+    if !paths.is_empty() {
+        let mut remove = vec!["rm", "-r", "-q", "-f", "--ignore-unmatch", "--"];
+        remove.extend(paths.iter().map(String::as_str));
+        git(main, &remove, env)?;
+    }
+    let message = format!("Merge harness branch '{branch}'");
+    git(main, &["commit", "-q", "--no-verify", "-m", &message], env)?;
+    Ok(true)
+}
+
+fn has_own_commits(main: &Path, branch: &str, env: &Env) -> Result<bool> {
+    let range = format!("{DEFAULT_BRANCH}..{branch}");
+    Ok(!git(main, &["rev-list", "-1", &range], env)?
+        .trim()
+        .is_empty())
+}
+
+fn verified(cwd: &Path, reference: &str, env: &Env) -> Result<String> {
+    let (_, stdout, _) = gitenv::git_status(cwd, &["rev-parse", "-q", "--verify", reference], env)?;
+    Ok(stdout.trim().to_string())
+}
+
+fn checked_out(main: &Path, env: &Env) -> Result<HashSet<String>> {
+    let listing = gitenv::git(main, &["worktree", "list", "--porcelain"], env)?;
+    Ok(listing
+        .lines()
+        .filter(|line| line.starts_with("branch "))
+        .map(|line| line.trim_start_matches("branch refs/heads/").to_string())
+        .collect())
+}
+
+fn is_ancestor(main: &Path, commit: &str, reference: &str, env: &Env) -> Result<bool> {
+    let args = ["merge-base", "--is-ancestor", commit, reference];
+    Ok(gitenv::git_status(main, &args, env)?.0 == 0)
+}
+
+fn last_line(stderr: &str) -> Option<&str> {
+    stderr.trim().lines().last()
+}
+
+fn exit_code(code: Option<i32>) -> String {
+    code.map_or_else(|| "signal".to_string(), |code| code.to_string())
 }
 
 fn every_file_missing(target: &Path, env: &Env) -> Result<bool> {

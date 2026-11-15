@@ -959,3 +959,323 @@ fn missing_binary_never_blocks_git() {
     assert!(commit.status.success(), "{}", text(&commit.stderr));
     assert_eq!(text(&checkout.stderr) + &text(&commit.stderr), "");
 }
+
+fn submitting(sandbox: &Sandbox) -> (PathBuf, PathBuf) {
+    let main = seeded(sandbox);
+    let origin = sandbox.root.join("origin.git");
+    git_ok(
+        sandbox,
+        &sandbox.root,
+        &["init", "-q", "--bare", path(&origin)],
+    );
+    git_ok(sandbox, &main, &["remote", "add", "origin", path(&origin)]);
+    git_ok(sandbox, &main, &["push", "-q", "origin", "main:develop"]);
+    git_ok(sandbox, &main, &["fetch", "-q", "origin"]);
+    add_events(sandbox, &main, &["pre-push", "reference-transaction"]);
+    write(&main.join(".superpowers/sdd/other/progress.md"), "other");
+    hgit(sandbox, &main, &["add", "-f", ".superpowers"]);
+    hgit(sandbox, &main, &["commit", "-q", "-m", "Add other ledger"]);
+    (main, origin)
+}
+
+fn feature(sandbox: &Sandbox, main: &Path, branch: &str, own_commit: bool) -> PathBuf {
+    let dashed = branch.replace('/', "-");
+    let target = sandbox.root.join(&dashed);
+    git_ok(
+        sandbox,
+        main,
+        &["worktree", "add", "-q", "-b", branch, path(&target)],
+    );
+    if own_commit {
+        fs::write(target.join(format!("{dashed}.txt")), branch).unwrap();
+        git_ok(sandbox, &target, &["add", "."]);
+        git_ok(
+            sandbox,
+            &target,
+            &["commit", "-q", "-m", &format!("Work on {branch}")],
+        );
+    }
+    let name = branch.rsplit('/').next().unwrap();
+    write(
+        &target.join(format!(".superpowers/sdd/2026-11-10-{name}/progress.md")),
+        "ledger",
+    );
+    write(
+        &target.join(format!(".claude/handoffs/2026-11-10-{name}.md")),
+        "handoff",
+    );
+    write(&target.join(format!(".claude/notes-{name}.md")), "feature");
+    assert!(harness::snapshot(&target, &env_of(sandbox)).unwrap());
+    target
+}
+
+fn submit(sandbox: &Sandbox, main: &Path, origin: &Path, branch: &str) {
+    let clone = sandbox
+        .root
+        .join(format!("submit-{}", branch.replace('/', "-")));
+    git_ok(
+        sandbox,
+        &sandbox.root,
+        &["clone", "-q", "-b", "develop", path(origin), path(&clone)],
+    );
+    git_ok(
+        sandbox,
+        &clone,
+        &["fetch", "-q", path(main), &format!("{branch}:{branch}")],
+    );
+    git_ok(
+        sandbox,
+        &clone,
+        &[
+            "merge",
+            "-q",
+            "--no-ff",
+            "-m",
+            &format!("Merge {branch}"),
+            branch,
+        ],
+    );
+    git_ok(sandbox, &clone, &["push", "-q", "origin", "develop"]);
+}
+
+fn advance(sandbox: &Sandbox, origin: &Path, name: &str) {
+    let clone = sandbox.root.join(format!("advance-{name}"));
+    git_ok(
+        sandbox,
+        &sandbox.root,
+        &["clone", "-q", "-b", "develop", path(origin), path(&clone)],
+    );
+    fs::write(clone.join(format!("{name}.txt")), name).unwrap();
+    git_ok(sandbox, &clone, &["add", "."]);
+    git_ok(sandbox, &clone, &["commit", "-q", "-m", name]);
+    git_ok(sandbox, &clone, &["push", "-q", "origin", "develop"]);
+}
+
+fn remove(sandbox: &Sandbox, main: &Path, target: &Path) {
+    git_ok(
+        sandbox,
+        main,
+        &["worktree", "remove", "--force", path(target)],
+    );
+}
+
+fn develop_files(sandbox: &Sandbox, main: &Path) -> BTreeSet<String> {
+    hgit(sandbox, main, &["ls-tree", "-r", "--name-only", "develop"])
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+fn merges(sandbox: &Sandbox, main: &Path) -> Vec<String> {
+    hgit(sandbox, main, &["rev-list", "--merges", "develop"])
+        .split_whitespace()
+        .map(str::to_string)
+        .collect()
+}
+
+fn commit_conflicting_note(sandbox: &Sandbox, main: &Path) {
+    write(&main.join(".claude/notes-foo.md"), "develop");
+    hgit(sandbox, main, &["add", ".claude/notes-foo.md"]);
+    hgit(sandbox, main, &["commit", "-q", "-m", "Conflicting note"]);
+}
+
+#[test]
+fn merge_keeps_existing_ledger_directory() {
+    let sandbox = Sandbox::new();
+    let (main, origin) = submitting(&sandbox);
+    let target = feature(&sandbox, &main, "feature/foo", true);
+    write(&target.join(".superpowers/sdd/other/extra.md"), "extra");
+    assert!(harness::snapshot(&target, &env_of(&sandbox)).unwrap());
+    remove(&sandbox, &main, &target);
+    submit(&sandbox, &main, &origin, "feature/foo");
+
+    git_ok(&sandbox, &main, &["fetch", "-q", "origin"]);
+
+    let files = develop_files(&sandbox, &main);
+    assert!(files.contains(".superpowers/sdd/other/progress.md"));
+    assert!(!files.contains(".superpowers/sdd/other/extra.md"));
+}
+
+#[test]
+fn submitted_feature_is_merged_no_ff() {
+    let sandbox = Sandbox::new();
+    let (main, origin) = submitting(&sandbox);
+    let target = feature(&sandbox, &main, "feature/foo", true);
+    remove(&sandbox, &main, &target);
+    submit(&sandbox, &main, &origin, "feature/foo");
+
+    let result = sandbox.git(&main, &["fetch", "-q", "origin"]);
+
+    assert!(result.status.success(), "{}", text(&result.stderr));
+    assert_eq!(merges(&sandbox, &main).len(), 1);
+    let parents = hgit(&sandbox, &main, &["rev-list", "--parents", "-1", "develop"]);
+    assert_eq!(parents.split_whitespace().count(), 3);
+    assert!(develop_files(&sandbox, &main).contains(".claude/notes-foo.md"));
+    assert_eq!(read(&main.join(".claude/notes-foo.md")), "feature");
+}
+
+#[test]
+fn merge_removes_feature_ledger_and_handoffs() {
+    let sandbox = Sandbox::new();
+    let (main, origin) = submitting(&sandbox);
+    let target = feature(&sandbox, &main, "feature/foo", true);
+    remove(&sandbox, &main, &target);
+    submit(&sandbox, &main, &origin, "feature/foo");
+
+    git_ok(&sandbox, &main, &["fetch", "-q", "origin"]);
+
+    let files = develop_files(&sandbox, &main);
+    assert!(!files.contains(".superpowers/sdd/2026-11-10-foo/progress.md"));
+    assert!(!files.contains(".claude/handoffs/2026-11-10-foo.md"));
+    assert!(files.contains(".superpowers/sdd/other/progress.md"));
+    assert!(!main.join(".superpowers/sdd/2026-11-10-foo").exists());
+}
+
+#[test]
+fn checked_out_branch_is_not_merged() {
+    let sandbox = Sandbox::new();
+    let (main, origin) = submitting(&sandbox);
+    feature(&sandbox, &main, "feature/foo", true);
+    submit(&sandbox, &main, &origin, "feature/foo");
+
+    git_ok(&sandbox, &main, &["fetch", "-q", "origin"]);
+
+    assert!(merges(&sandbox, &main).is_empty());
+}
+
+#[test]
+fn branch_without_own_commits_is_not_merged() {
+    let sandbox = Sandbox::new();
+    let (main, origin) = submitting(&sandbox);
+    let target = feature(&sandbox, &main, "feature/empty", false);
+    remove(&sandbox, &main, &target);
+    advance(&sandbox, &origin, "later");
+
+    git_ok(&sandbox, &main, &["fetch", "-q", "origin"]);
+
+    assert!(merges(&sandbox, &main).is_empty());
+}
+
+#[test]
+fn merge_is_not_repeated() {
+    let sandbox = Sandbox::new();
+    let (main, origin) = submitting(&sandbox);
+    let target = feature(&sandbox, &main, "feature/foo", true);
+    remove(&sandbox, &main, &target);
+    submit(&sandbox, &main, &origin, "feature/foo");
+    git_ok(&sandbox, &main, &["fetch", "-q", "origin"]);
+    advance(&sandbox, &origin, "later");
+
+    git_ok(&sandbox, &main, &["fetch", "-q", "origin"]);
+
+    assert_eq!(merges(&sandbox, &main).len(), 1);
+}
+
+#[test]
+fn merge_waits_until_worktree_is_gone() {
+    let sandbox = Sandbox::new();
+    let (main, origin) = submitting(&sandbox);
+    let target = feature(&sandbox, &main, "feature/foo", true);
+    submit(&sandbox, &main, &origin, "feature/foo");
+    git_ok(&sandbox, &main, &["fetch", "-q", "origin"]);
+    git_ok(
+        &sandbox,
+        &main,
+        &["branch", "-q", "-f", "develop", "origin/develop"],
+    );
+    remove(&sandbox, &main, &target);
+    advance(&sandbox, &origin, "later");
+
+    git_ok(&sandbox, &main, &["fetch", "-q", "origin"]);
+
+    assert_eq!(merges(&sandbox, &main).len(), 1);
+}
+
+#[test]
+fn open_conflict_blocks_second_merge() {
+    let sandbox = Sandbox::new();
+    let (main, origin) = submitting(&sandbox);
+    let target = feature(&sandbox, &main, "feature/foo", true);
+    remove(&sandbox, &main, &target);
+    commit_conflicting_note(&sandbox, &main);
+    submit(&sandbox, &main, &origin, "feature/foo");
+    let first = sandbox.git(&main, &["fetch", "-q", "origin"]);
+    assert!(
+        text(&first.stderr).contains("conflict"),
+        "{}",
+        text(&first.stderr)
+    );
+    let target = feature(&sandbox, &main, "feature/bar", true);
+    remove(&sandbox, &main, &target);
+    submit(&sandbox, &main, &origin, "feature/bar");
+
+    let second = sandbox.git(&main, &["fetch", "-q", "origin"]);
+
+    assert!(merges(&sandbox, &main).is_empty());
+    assert!(text(&second.stderr).contains("still open"));
+    assert!(harness_root(&main).join("MERGE_HEAD").is_file());
+}
+
+#[test]
+fn snapshot_refuses_during_open_merge() {
+    let sandbox = Sandbox::new();
+    let (main, origin) = submitting(&sandbox);
+    let target = feature(&sandbox, &main, "feature/foo", true);
+    remove(&sandbox, &main, &target);
+    commit_conflicting_note(&sandbox, &main);
+    submit(&sandbox, &main, &origin, "feature/foo");
+    git_ok(&sandbox, &main, &["fetch", "-q", "origin"]);
+    let head = hgit(&sandbox, &main, &["rev-parse", "HEAD"]);
+
+    let result = sandbox.git(&main, &["push", "-q", "origin", "main:refs/heads/side"]);
+
+    assert!(result.status.success());
+    assert!(text(&result.stderr).contains("merge is still open"));
+    assert_eq!(hgit(&sandbox, &main, &["rev-parse", "HEAD"]), head);
+}
+
+#[test]
+fn manual_merge_ignores_ancestry() {
+    let sandbox = Sandbox::new();
+    let (main, _) = submitting(&sandbox);
+    let target = feature(&sandbox, &main, "fix/x", true);
+    remove(&sandbox, &main, &target);
+
+    let result = sandbox.wt(&main, &["harness", "merge", "fix/x"]);
+
+    assert_eq!(result.status.code(), Some(0), "{}", text(&result.stderr));
+    assert_eq!(
+        text(&result.stderr),
+        "worktree-init: merged harness branch fix/x into develop\n"
+    );
+    assert_eq!(merges(&sandbox, &main).len(), 1);
+    assert!(!develop_files(&sandbox, &main).contains(".claude/handoffs/2026-11-10-x.md"));
+}
+
+#[test]
+fn harness_hook_ignores_unrelated_reference_transactions() {
+    let sandbox = Sandbox::new();
+    let (main, origin) = submitting(&sandbox);
+    let target = feature(&sandbox, &main, "feature/foo", true);
+    remove(&sandbox, &main, &target);
+    submit(&sandbox, &main, &origin, "feature/foo");
+    git_ok(
+        &sandbox,
+        &main,
+        &["-c", "hook.harness.enabled=false", "fetch", "-q", "origin"],
+    );
+    let line = |reference: &str| format!("{ZEROS} {ONES} {reference}\n");
+
+    for (state, reference) in [
+        ("prepared", "refs/remotes/origin/develop"),
+        ("committed", "refs/heads/main"),
+    ] {
+        run_harness_hook(&sandbox, &main, &[state], &line(reference), &[]);
+        assert!(merges(&sandbox, &main).is_empty(), "{state} {reference}");
+    }
+    let input = line("refs/heads/main") + &line("refs/remotes/origin/develop");
+    let result = run_harness_hook(&sandbox, &main, &["committed"], &input, &[]);
+
+    assert_eq!(result.status.code(), Some(0));
+    assert_eq!(merges(&sandbox, &main).len(), 1);
+}
