@@ -6,6 +6,7 @@ pub mod error;
 pub mod fsops;
 pub mod gitenv;
 pub mod glob;
+pub mod harness;
 pub mod hook;
 pub mod include;
 pub mod interrupt;

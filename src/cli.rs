@@ -1,6 +1,7 @@
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::iter::Peekable;
 use std::os::unix::process::ExitStatusExt;
+use std::panic;
 use std::path::Path;
 use std::process::Command as Process;
 use std::slice::Iter;
@@ -11,6 +12,7 @@ use crate::config;
 use crate::engine;
 use crate::error::{Error, Result};
 use crate::gitenv::{self, Env};
+use crate::harness;
 use crate::hook;
 use crate::interrupt;
 use crate::options::{self, Choices, Kind, OptionSpec, Values, python_repr};
@@ -30,7 +32,11 @@ pub const USAGE: &str = "usage: git wt add [<options>] -- <git-worktree-add-args
 ";
 
 const HELP_FLAGS: [&str; 2] = ["-h", "--help"];
-const NOT_YET_PORTED: [&str; 2] = ["harness", "harness-hook"];
+const HARNESS_USAGE: &str = "usage: git wt harness init --remote <url>
+   or: git wt harness sync
+   or: git wt harness merge <branch>
+
+";
 const HELP_COLUMN: usize = 26;
 const YES_HELP: &str = "never prompt, use defaults";
 const FORCE_HELP: &str = "remove a dirty worktree, twice for a locked one";
@@ -82,7 +88,8 @@ pub fn main(argv: Vec<String>) -> i32 {
         "refresh" => refresh(rest, &gitenv::process_env()),
         "remove" => remove(rest, &gitenv::process_env()),
         "prune" => prune(rest, &gitenv::process_env()),
-        _ if NOT_YET_PORTED.contains(&command) => usage_error("not implemented yet", USAGE),
+        "harness" => harness_command(rest, &gitenv::process_env()),
+        "harness-hook" => guarded_harness_hook(rest),
         _ => usage_error(&format!("unknown subcommand: `{command}'"), USAGE),
     }
 }
@@ -292,6 +299,197 @@ fn prune(args: &[String], env: &Env) -> i32 {
             1
         }
     }
+}
+
+fn harness_command(args: &[String], env: &Env) -> i32 {
+    if wants_help(args) {
+        print!("{HARNESS_USAGE}");
+        return USAGE_ERROR;
+    }
+    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    match words.as_slice() {
+        ["sync"] => harness_sync(env),
+        ["init", rest @ ..] => match parse_init(rest) {
+            Ok(remote) => harness_init(&remote, env),
+            Err(error) => usage_error(&error.to_string(), HARNESS_USAGE),
+        },
+        _ => usage_error("need the subcommand init, sync or merge", HARNESS_USAGE),
+    }
+}
+
+fn parse_init(args: &[&str]) -> Result<String> {
+    let mut remote = None;
+    let mut unrecognized = Vec::new();
+    let mut rest = args.iter().peekable();
+    while let Some(arg) = rest.next() {
+        if *arg == "--remote" {
+            let value = rest.next_if(|next| !is_option_like(next));
+            let missing = || usage("argument --remote: expected one argument".into());
+            remote = Some(value.ok_or_else(missing)?.to_string());
+        } else if let Some(value) = arg.strip_prefix("--remote=") {
+            remote = Some(value.to_string());
+        } else {
+            unrecognized.push(*arg);
+        }
+    }
+    let remote =
+        remote.ok_or_else(|| usage("the following arguments are required: --remote".into()))?;
+    if !unrecognized.is_empty() {
+        let listed = unrecognized.join(" ");
+        return Err(usage(format!("unrecognized arguments: {listed}")));
+    }
+    Ok(remote)
+}
+
+fn harness_init(remote: &str, env: &Env) -> i32 {
+    let created = std::env::current_dir()
+        .map_err(Error::from)
+        .and_then(|cwd| worktrees::discover(&cwd, &gitenv::sanitized(env, &[])))
+        .and_then(|repo| harness::init(&repo.main, remote, env).map(|()| repo));
+    match created {
+        Ok(repo) => {
+            let root = harness::git_dir(&repo.common_dir);
+            eprintln!("worktree-init: harness created in {}", root.display());
+            0
+        }
+        Err(error) => {
+            eprintln!("worktree-init: {error}");
+            1
+        }
+    }
+}
+
+fn harness_sync(env: &Env) -> i32 {
+    let pushed = std::env::current_dir()
+        .map_err(Error::from)
+        .and_then(|cwd| worktrees::toplevel(&cwd, &gitenv::sanitized(env, &[])))
+        .and_then(|target| {
+            harness::snapshot(&target, env)?;
+            harness::push(&target, env)
+        });
+    harness_exit(pushed)
+}
+
+fn harness_exit(outcome: Result<bool>) -> i32 {
+    match outcome {
+        Ok(done) => i32::from(!done),
+        Err(error) => {
+            eprintln!("worktree-init: harness: {error}");
+            1
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum HarnessEvent {
+    PostCheckout,
+    PrePush,
+    ReferenceTransaction,
+}
+
+impl HarnessEvent {
+    fn of_count(count: usize) -> Option<HarnessEvent> {
+        match count {
+            3 => Some(HarnessEvent::PostCheckout),
+            2 => Some(HarnessEvent::PrePush),
+            1 => Some(HarnessEvent::ReferenceTransaction),
+            _ => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            HarnessEvent::PostCheckout => "post-checkout",
+            HarnessEvent::PrePush => "pre-push",
+            HarnessEvent::ReferenceTransaction => "reference-transaction",
+        }
+    }
+}
+
+fn guarded_harness_hook(args: &[String]) -> i32 {
+    let outcome =
+        panic::catch_unwind(|| harness_hook(args, &gitenv::process_env(), std::io::stdin().lock()));
+    if outcome.is_err() {
+        let event = HarnessEvent::of_count(args.len()).map_or("git", HarnessEvent::name);
+        let _ = writeln!(
+            std::io::stderr(),
+            "worktree-init: harness hook failed, {event} continues"
+        );
+    }
+    0
+}
+
+pub fn harness_hook(args: &[String], env: &Env, stdin: impl BufRead) -> i32 {
+    if inside_harness_operation(env) {
+        return 0;
+    }
+    let Some(event) = hook_event(args, stdin) else {
+        return 0;
+    };
+    let clean = gitenv::sanitized(env, &[]);
+    let Ok(cwd) = std::env::current_dir() else {
+        return 0;
+    };
+    if !has_harness(&cwd, &clean) {
+        return 0;
+    }
+    if let Err(error) = run_harness_event(event, &cwd, env) {
+        eprintln!("worktree-init: harness: {error}");
+    }
+    0
+}
+
+fn inside_harness_operation(env: &Env) -> bool {
+    env.get("GIT_DIR")
+        .is_some_and(|dir| dir.ends_with("/harness.git") || dir.contains("/harness.git/"))
+}
+
+fn hook_event(args: &[String], stdin: impl BufRead) -> Option<HarnessEvent> {
+    let event = HarnessEvent::of_count(args.len())?;
+    let wanted = match event {
+        HarnessEvent::PostCheckout => args[2] == "1",
+        HarnessEvent::PrePush => true,
+        HarnessEvent::ReferenceTransaction => args[0] == "committed" && moves_upstream(stdin),
+    };
+    wanted.then_some(event)
+}
+
+fn moves_upstream(stdin: impl BufRead) -> bool {
+    stdin
+        .split(b'\n')
+        .map_while(std::io::Result::ok)
+        .filter(|line| names_upstream(line))
+        .count()
+        > 0
+}
+
+fn names_upstream(line: &[u8]) -> bool {
+    String::from_utf8_lossy(line).split_whitespace().nth(2) == Some(harness::UPSTREAM)
+}
+
+fn has_harness(cwd: &Path, clean: &Env) -> bool {
+    let args = ["rev-parse", "--path-format=absolute", "--git-common-dir"];
+    gitenv::git(cwd, &args, clean).is_ok_and(|common| harness::enabled(Path::new(common.trim())))
+}
+
+fn run_harness_event(event: HarnessEvent, cwd: &Path, env: &Env) -> Result<()> {
+    let clean = gitenv::sanitized(env, &[]);
+    let target = worktrees::toplevel(cwd, &clean)?;
+    match event {
+        HarnessEvent::PostCheckout => {
+            let args = ["symbolic-ref", "-q", "--short", "HEAD"];
+            let (_, branch, _) = gitenv::git_status(&target, &args, &clean)?;
+            if !branch.trim().is_empty() {
+                harness::switch(&target, branch.trim(), env)?;
+            }
+        }
+        HarnessEvent::PrePush => {
+            harness::snapshot(&target, env)?;
+            harness::push(&target, env)?;
+        }
+        HarnessEvent::ReferenceTransaction => {}
+    }
+    Ok(())
 }
 
 pub fn declared(cwd: &Path, env: &Env) -> Result<Vec<OptionSpec>> {
