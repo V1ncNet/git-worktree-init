@@ -37,5 +37,20 @@
           };
         };
       });
+
+      devShells = forAllSystems (pkgs: {
+        default = pkgs.mkShell {
+          packages = with pkgs; [
+            cargo
+            rustc
+            clippy
+            rustfmt
+            python312
+            python312Packages.pytest
+            uv
+            git
+          ];
+        };
+      });
     };
 }
