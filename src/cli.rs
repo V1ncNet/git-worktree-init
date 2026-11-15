@@ -1,6 +1,8 @@
 use std::io::Write;
 use std::iter::Peekable;
+use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
+use std::process::Command as Process;
 use std::slice::Iter;
 
 use serde_json::Value;
@@ -10,6 +12,7 @@ use crate::engine;
 use crate::error::{Error, Result};
 use crate::gitenv::{self, Env};
 use crate::hook;
+use crate::interrupt;
 use crate::options::{self, Choices, Kind, OptionSpec, Values, python_repr};
 use crate::worktrees;
 
@@ -27,7 +30,7 @@ pub const USAGE: &str = "usage: git wt add [<options>] -- <git-worktree-add-args
 ";
 
 const HELP_FLAGS: [&str; 2] = ["-h", "--help"];
-const NOT_YET_PORTED: [&str; 5] = ["add", "remove", "prune", "harness", "harness-hook"];
+const NOT_YET_PORTED: [&str; 4] = ["remove", "prune", "harness", "harness-hook"];
 const HELP_COLUMN: usize = 26;
 const YES_HELP: &str = "never prompt, use defaults";
 const SETUP_FAILED: i32 = 2;
@@ -72,6 +75,7 @@ pub fn main(argv: Vec<String>) -> i32 {
             0
         }
         "hook" => hook::run(rest, &gitenv::process_env()),
+        "add" => add(rest, &gitenv::process_env()),
         "refresh" => refresh(rest, &gitenv::process_env()),
         _ if NOT_YET_PORTED.contains(&command) => usage_error("not implemented yet", USAGE),
         _ => usage_error(&format!("unknown subcommand: `{command}'"), USAGE),
@@ -81,6 +85,68 @@ pub fn main(argv: Vec<String>) -> i32 {
 pub fn usage_error(message: &str, usage: &str) -> i32 {
     let _ = write!(std::io::stderr(), "error: {message}\n{usage}");
     USAGE_ERROR
+}
+
+fn add(args: &[String], env: &Env) -> i32 {
+    let Ok(cwd) = std::env::current_dir() else {
+        eprintln!("worktree-init: the current directory is gone");
+        return SETUP_FAILED;
+    };
+    let (own, forwarded) = match args.iter().position(|arg| arg == "--") {
+        Some(split) => (&args[..split], Some(&args[split + 1..])),
+        None => (args, None),
+    };
+    let options = match declared(&cwd, env) {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!("worktree-init: {error}");
+            return SETUP_FAILED;
+        }
+    };
+    if wants_help(own) {
+        print!("{}", help_text(&ADD, &options));
+        return USAGE_ERROR;
+    }
+    let Some(forwarded) = forwarded else {
+        let message = "missing -- before the git worktree add arguments";
+        return usage_error(message, &help_text(&ADD, &options));
+    };
+    match parse_flags(&options, own, ADD.with_yes, ADD.with_target) {
+        Ok(flags) => run_worktree_add(forwarded, &add_env(&options, &flags, &cwd), &cwd),
+        Err(error) => usage_error(&error.to_string(), &help_text(&ADD, &options)),
+    }
+}
+
+fn add_env(options: &[OptionSpec], flags: &Flags, cwd: &Path) -> Env {
+    let mut extra = flag_env(options, flags, cwd);
+    if flags.yes {
+        extra.insert("WT_YES".to_string(), "1".to_string());
+    }
+    extra
+}
+
+fn run_worktree_add(forwarded: &[String], extra: &Env, cwd: &Path) -> i32 {
+    let spawned = Process::new("git")
+        .args(["worktree", "add"])
+        .args(forwarded)
+        .envs(extra)
+        .current_dir(cwd)
+        .spawn();
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(error) => {
+            eprintln!("worktree-init: cannot run git: {error}");
+            return SETUP_FAILED;
+        }
+    };
+    interrupt::on_interrupt(String::new());
+    interrupt::watch_child(child.id() as i32, -1);
+    match child.wait() {
+        Ok(status) => status
+            .code()
+            .unwrap_or_else(|| 128 + status.signal().unwrap_or(0)),
+        Err(_) => SETUP_FAILED,
+    }
 }
 
 fn refresh(args: &[String], env: &Env) -> i32 {

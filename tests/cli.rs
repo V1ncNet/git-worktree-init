@@ -91,6 +91,31 @@ fn parse(args: &[&str]) -> Result<cli::Flags, String> {
 }
 
 #[test]
+fn option_rows_follow_git() {
+    let confirm = spec(
+        "clone_db",
+        Kind::Confirm,
+        "clone the database",
+        Choices::None,
+    );
+    let names = vec!["none".to_string(), "a".to_string()];
+    let fixed = spec("db", Kind::Choice, "db", Choices::Fixed(names));
+    let dynamic = spec("db", Kind::Choice, "db", Choices::Dynamic);
+    let long = spec("very_long_option_name", Kind::Text, "wraps", Choices::None);
+
+    assert_eq!(
+        cli::option_row(&confirm),
+        "    --[no-]clone-db       clone the database"
+    );
+    assert_eq!(cli::option_row(&fixed), "    --db (none|a)         db");
+    assert_eq!(cli::option_row(&dynamic), "    --db <value>          db");
+    assert_eq!(
+        cli::option_row(&long),
+        "    --very-long-option-name <value>\n                          wraps"
+    );
+}
+
+#[test]
 fn flags_parse_like_argparse() {
     let flags = parse(&[
         "--no-graph",

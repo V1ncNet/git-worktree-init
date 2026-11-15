@@ -1,7 +1,9 @@
 import os
 import pty
 import select
+import shutil
 import signal
+import subprocess
 import time
 from pathlib import Path
 
@@ -143,6 +145,39 @@ def test_ctrl_c_at_prompt_aborts_with_repair_hint(configured):
     assert session.finish() == 130
     assert_aborted(session, target)
     assert not (target / ".env").exists()
+
+
+def test_add_keyboard_interrupt_returns_130(repo, tmp_path):
+    started, finished = tmp_path / "started", tmp_path / "finished"
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    (stub / "git").write_text(
+        "#!/bin/sh\n"
+        'if [ "$2" != add ]; then exec "' + shutil.which("git") + '" "$@"; fi\n'
+        f"trap '' INT\ntouch {started}\nsleep 3\ntouch {finished}\n"
+    )
+    (stub / "git").chmod(0o755)
+    env = dict(os.environ, PATH=f"{stub}:{os.environ['PATH']}")
+    process = subprocess.Popen(
+        [str(binary()), "add", "--", "../x"],
+        cwd=repo,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    deadline = time.monotonic() + DEADLINE
+    while not started.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    process.send_signal(signal.SIGINT)
+    time.sleep(0.5)
+
+    assert process.poll() is None
+    assert not finished.exists()
+    _, stderr = process.communicate(timeout=DEADLINE)
+    assert process.returncode == 130
+    assert finished.exists()
+    assert b"worktree-init" not in stderr
 
 
 def test_ctrl_c_during_apply_waits_for_plugin(configured, tmp_path):
