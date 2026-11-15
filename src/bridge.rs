@@ -10,6 +10,7 @@ use crate::config::{self, Entries};
 use crate::error::{Error, Result};
 use crate::gitenv::{self, Env};
 use crate::options::{Choices, Kind, OptionSpec, Values};
+use crate::worktrees;
 
 const BOOT: &str = r#"import sys
 if sys.path and sys.path[0] == "":
@@ -90,11 +91,10 @@ pub fn locate(main: &Path, entries: &Entries) -> Option<PathBuf> {
     if path.is_absolute() {
         return Some(path);
     }
-    let joined = main.join(path);
-    Some(joined.canonicalize().unwrap_or(joined))
+    Some(worktrees::resolve(&main.join(path)))
 }
 
-fn expand_home(raw: &str) -> PathBuf {
+pub fn expand_home(raw: &str) -> PathBuf {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     match (raw, raw.strip_prefix("~/"), home) {
         ("~", _, Some(home)) => home,
@@ -254,6 +254,10 @@ impl Plugin {
 
     pub fn pid(&self) -> i32 {
         self.child.id() as i32
+    }
+
+    pub fn request_fd(&self) -> RawFd {
+        self.requests.as_ref().map_or(-1, AsRawFd::as_raw_fd)
     }
 
     pub fn slot_of(&mut self, worktree: &Path) -> Result<Option<u32>> {

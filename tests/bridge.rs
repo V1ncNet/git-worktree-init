@@ -268,3 +268,25 @@ fn locate_resolves_relative_absolute_and_home_paths() {
         Some(home.join("p.py"))
     );
 }
+
+#[test]
+fn locate_resolves_symlinked_main_for_missing_plugin() {
+    let sandbox = Sandbox::new();
+    let real = sandbox.root.join("real");
+    fs::create_dir_all(real.join("tools")).unwrap();
+    let link = sandbox.root.join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let mut entries = git_wt::config::Entries::new();
+    entries.insert(
+        "plugin".into(),
+        vec![git_wt::config::Entry {
+            scope: "local".into(),
+            value: "tools/../missing.py".into(),
+        }],
+    );
+
+    assert_eq!(
+        bridge::locate(&link, &entries),
+        Some(real.join("missing.py"))
+    );
+}

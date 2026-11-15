@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 
+use std::ffi::OsStr;
 use std::fs;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -46,11 +48,11 @@ impl Sandbox {
     }
 
     pub fn git(&self, cwd: &Path, args: &[&str]) -> Output {
-        self.run(Command::new("git"), cwd, args)
+        self.run("git", cwd, args)
     }
 
     pub fn wt(&self, cwd: &Path, args: &[&str]) -> Output {
-        self.run(Command::new(env!("CARGO_BIN_EXE_git-wt")), cwd, args)
+        self.run(wt_bin(), cwd, args)
     }
 
     pub fn env(&self) -> Vec<(String, String)> {
@@ -80,8 +82,9 @@ impl Sandbox {
         );
     }
 
-    fn run(&self, mut command: Command, cwd: &Path, args: &[&str]) -> Output {
-        command.current_dir(cwd).args(args);
+    pub fn command(&self, program: impl AsRef<OsStr>, cwd: &Path) -> Command {
+        let mut command = Command::new(program);
+        command.current_dir(cwd);
         for (key, _) in std::env::vars_os() {
             let key = key.to_string_lossy();
             if key.starts_with("WT_") || LEAKING.contains(&key.as_ref()) {
@@ -89,8 +92,53 @@ impl Sandbox {
             }
         }
         command.envs(self.env());
-        command.output().unwrap()
+        without_terminal(&mut command);
+        command
     }
+
+    pub fn wt_command(&self, cwd: &Path) -> Command {
+        self.command(env!("CARGO_BIN_EXE_git-wt"), cwd)
+    }
+
+    fn run(&self, program: &str, cwd: &Path, args: &[&str]) -> Output {
+        self.command(program, cwd).args(args).output().unwrap()
+    }
+}
+
+pub fn without_terminal(command: &mut Command) {
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+pub fn wt_bin() -> &'static str {
+    env!("CARGO_BIN_EXE_git-wt")
+}
+
+pub fn register_hook(sandbox: &Sandbox, main: &Path) {
+    register_hook_with(sandbox, main, wt_bin());
+}
+
+pub fn register_hook_with(sandbox: &Sandbox, main: &Path, binary: &str) {
+    let command = format!(r#"f="{binary}"; [ -x "$f" ] || exit 0; exec "$f" hook"#);
+    let output = sandbox.git(main, &["config", "hook.worktree-init.command", &command]);
+    assert!(output.status.success());
+    let event = [
+        "config",
+        "--add",
+        "hook.worktree-init.event",
+        "post-checkout",
+    ];
+    assert!(sandbox.git(main, &event).status.success());
+}
+
+pub fn text(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
 }
 
 impl Drop for Sandbox {
