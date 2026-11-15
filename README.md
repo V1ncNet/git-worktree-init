@@ -13,7 +13,19 @@ The interpreter for a plugin can be set with `git config worktree-init.python <p
 
 ## Install
 
-`git-wt` is a single binary. Each release on GitHub has an archive `git-wt-<version>-<target>.tar.gz` for `aarch64-apple-darwin`, `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`, with a `.sha256` file next to it. Unpack the archive into a directory on `PATH`, such as `~/.local/bin`. Git then runs the binary for `git wt`.
+`git-wt` is a single binary. Each release on GitHub has an archive `git-wt-<version>-<target>.tar.gz` for `aarch64-apple-darwin`, `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`, with a `.sha256` file next to it. The archive also holds `LICENSE` and `README.md`. Copy only `git-wt` onto `PATH`. Git then runs it for `git wt`:
+
+```sh
+tar -xzf git-wt-<version>-<target>.tar.gz
+install -m 755 git-wt ~/.local/bin/
+```
+
+With Homebrew, the repository acts as its own tap. The formula installs the release binary for macOS arm64 and Linux and prints the hook registration as caveats.
+
+```sh
+brew tap V1ncNet/git-worktree-init https://github.com/V1ncNet/git-worktree-init
+brew install V1ncNet/git-worktree-init/git-wt
+```
 
 macOS quarantines an archive downloaded in a browser and refuses to start the binary. Clear the flag once:
 
@@ -82,6 +94,8 @@ in
 ## Upgrading from 0.1
 
 Version 0.1 ran from a clone of this repository. Its registration points at `hook.sh` and `harness-hook.sh`, which no longer exist, so every checkout fails until the hooks are registered again. No compatibility shims ship.
+
+A Nix or home-manager config that still uses `${pkg}/hook.sh` points at a file that no longer exists after the upgrade. Every checkout fails until you switch to the example under "Nix".
 
 Install the binary as described under "Install". Then replace both commands in the config file that holds the old registration. Version 0.1 registered into `~/.config/git/local`:
 
@@ -262,6 +276,12 @@ git wt prune
 ```
 
 During create or refresh, a failed teardown prints a warning but does not fail the new worktree.
+
+## Release
+
+The version lives in `Cargo.toml`. To release, bump `version` there and run `cargo build` so `Cargo.lock` follows. Commit the change as `Release <version>` on `main`, tag it `v<version>` and push the tag.
+
+The workflow `release.yml` then checks that the tag matches `Cargo.toml` and sits on `main`. It builds the three targets and publishes the GitHub release with archives and checksums. Then it commits the new version and checksums to `Formula/git-wt.rb` on `main`. A run started by hand builds the archives but publishes nothing.
 
 ## Failure and repair
 
