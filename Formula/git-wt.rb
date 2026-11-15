@@ -7,18 +7,18 @@ class GitWt < Formula
   on_macos do
     on_arm do
       url "https://github.com/V1ncNet/git-worktree-init/releases/download/v#{version}/git-wt-#{version}-aarch64-apple-darwin.tar.gz"
-      sha256 "0000000000000000000000000000000000000000000000000000000000000000" # aarch64-apple-darwin
+      sha256 "af15088ce075be9c0a6ce69b45e152a7d87e9f95638733ae1fa1b3b662ab7ccb" # aarch64-apple-darwin
     end
   end
 
   on_linux do
     on_intel do
       url "https://github.com/V1ncNet/git-worktree-init/releases/download/v#{version}/git-wt-#{version}-x86_64-unknown-linux-musl.tar.gz"
-      sha256 "0000000000000000000000000000000000000000000000000000000000000000" # x86_64-unknown-linux-musl
+      sha256 "d7bf791990aaa59d78c20488d8b780e5a460fdcf7edfd2e2d7b9296663157615" # x86_64-unknown-linux-musl
     end
     on_arm do
       url "https://github.com/V1ncNet/git-worktree-init/releases/download/v#{version}/git-wt-#{version}-aarch64-unknown-linux-musl.tar.gz"
-      sha256 "0000000000000000000000000000000000000000000000000000000000000000" # aarch64-unknown-linux-musl
+      sha256 "0dfda5546db1eb37ba8106d6790593f3ddf54a19df5a9266c027e0113a7d32d0" # aarch64-unknown-linux-musl
     end
   end
 
