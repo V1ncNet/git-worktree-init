@@ -1,8 +1,10 @@
 pub mod cli;
 pub mod config;
 pub mod error;
+pub mod fsops;
 pub mod gitenv;
 pub mod glob;
+pub mod include;
 pub mod options;
 pub mod records;
 pub mod slots;
