@@ -5,10 +5,9 @@
 ```mermaid
 flowchart TD
     A[git worktree add] --> B[post-checkout]
-    B --> C[hook.sh: filters]
+    B --> C[git-wt hook: filters]
     C -->|no match| Z[exit 0]
-    C --> D[wti.py hook]
-    D --> E[read config, load plugin]
+    C --> E[read config, start plugin bridge]
     E --> F{terminal and interactive?}
     F -->|yes| G[prompt via /dev/tty]
     F -->|no| H[defaults]
@@ -27,9 +26,9 @@ flowchart TD
 
 `git wt add` sets `WT_*` variables and calls `git worktree add`, so it takes the same path. `git wt refresh` calls the same engine in `refresh` mode.
 
-## Shim filters
+## Hook filters
 
-`hook.sh` is registered globally, so it runs on every checkout of every repository. It exits early, in this order:
+The hook is registered globally, so `git-wt hook` runs on every checkout of every repository. It exits early, in this order:
 
 1. The previous HEAD is not all zeros, so this is not a fresh checkout.
 2. The checkout is not a branch checkout.
@@ -37,11 +36,17 @@ flowchart TD
 4. The worktree path matches an `ignorePaths` pattern.
 5. Neither `worktree-init.plugin` nor `worktree-init.localInclude` is set, and the main worktree has no `.worktreeinclude`.
 
-An ordinary checkout or clone costs at most two `git rev-parse`. Only a new linked worktree adds another `rev-parse`, up to four `git config` and one `git worktree list`. Python starts only after all filters passed.
+Git runs the registered command through `/bin/sh -c`, because the command contains shell metacharacters. The command checks that the binary exists and then starts it. An ordinary checkout of a branch or file therefore costs one shell start, one binary start and no Git call, because the first two filters only read the arguments. The binary alone starts in about 3.6 ms. Two checkouts take about 32 ms without a hook, about 40 ms with the `hook.sh` of version 0.1 and about 51 ms with the binary behind the check. That is about 5 ms more per checkout than in version 0.1. Git aborts a checkout or push when a hook cannot run. Without the check, a missing or moved binary would fail every checkout and push on the machine. The project accepts the extra shell start for that reason. Issue [#2](https://github.com/V1ncNet/git-worktree-init/issues/2) tracks whether the shell can go away. A fresh branch checkout, such as the one at the end of a clone, adds one `git rev-parse` and one `git worktree list`. Only a new linked worktree adds another `rev-parse` and one `git config`. Python starts only for a plugin, after all filters passed.
 
-## `wti.py` instead of `python -m`
+## Python bridge
 
-The hook runs `python3 <clone>/wti.py`, not `python -m git_worktree_init`. With `-m`, the working directory is on `sys.path`, and the hook runs inside the repository of the caller, which could shadow a module of the standard library or of this package. A script path puts only the directory of the script on `sys.path`. `wti.py` also checks the Python version before importing anything else.
+A plugin is Python. Rust cannot load it in-process. `git-wt` therefore starts the configured interpreter once per command and talks to it in JSON lines. The process stays for the whole run, because a function in `choices` gets the `Context` and runs during the prompt. The interpreter comes from `WT_PYTHON`, then `worktree-init.python`, then `python3`. The Nix package replaces `python3` with the Python of its nixpkgs input at build time.
+
+The protocol runs over fds 3 and 4, not stdin and stdout. A plugin's `print()` and the output of `ctx.run` children therefore keep the inherited stdout and stderr. Rust opens every descriptor with `CLOEXEC`, so the binary places the two pipe ends on 3 and 4 in `pre_exec`. The bridge marks them non-inheritable again, so a child of the plugin cannot hold the pipes open.
+
+The bridge sources are embedded in the binary and reach the interpreter in `argv` as JSON. A short boot script passed with `-c` turns them into the modules of `git_worktree_init`. The boot script writes no file, so no cache can go stale. With `-c`, the working directory is the first entry of `sys.path`. The hook runs inside the caller's repository, where a file could shadow a module of the standard library. The boot script removes that entry before its first import. The interpreter runs without `-I`, because `-I` would also drop `PYTHONPATH` and the user site-packages. A plugin may import a package installed there.
+
+The boot script checks the Python version before it loads the bridge modules. If the version is too old, it fails with a message that names `worktree-init.python`. `git-wt` keeps lock, slots, records, options and prompts. The bridge keeps only `Context` and the plugin calls.
 
 ## Lock and slot allocation
 
@@ -69,7 +74,7 @@ Git redirects the stdout of a hook to stderr. The core writes everything to stde
 
 ## `/dev/tty` with two handles
 
-The prompt reads and writes the terminal, not stdin and stdout, which Git may have redirected. `/dev/tty` is opened twice, once for reading and once for writing. A single handle in `r+` mode is not seekable on a terminal, and Python's buffered text layer fails on it.
+The prompt reads and writes the terminal, not stdin and stdout, which Git may have redirected. `/dev/tty` is opened twice, once for reading and once for writing. Two handles keep reading and writing independent of each other.
 
 ## Records and sweep
 
@@ -81,7 +86,7 @@ A record is alive while the admin directory holds its token and Git would keep t
 
 The sweep runs under the same lock as slot allocation. Afterwards the slots of all remaining records count as used. A record whose teardown failed keeps its slot, and a new worktree cannot collide with a database or port that still exists. A record also gives the slot of a worktree whose `slot_of` finds nothing, for example after a failed `apply`.
 
-`engine.execute` and `git wt prune` run the sweep. `hook.sh` needs no change, because Python starts there anyway. A failure during create only warns, since the new worktree is not at fault.
+Create, refresh and `git wt prune` run the sweep. A failure during create only warns, since the new worktree is not at fault.
 
 ## `git wt remove` tears down first
 
@@ -110,9 +115,9 @@ Two alternatives were tried and rejected:
 
 `harness.git/config` sets `core.excludesFile=/dev/null`, because a global excludes file may ignore the harness paths, and disables the global hooks for harness operations. The allowlist lives in `harness.git/info/exclude`. A tracked `.gitignore` of the code repository still applies and has precedence over `info/exclude`. Snapshots therefore list new files with `git ls-files --others --exclude-from=harness.git/info/exclude`, which skips the standard ignore files, and add them with `--force`.
 
-Submitted features are detected through the `reference-transaction` hook. A fetch, and the fetch inside `git pull --rebase`, updates `refs/remotes/origin/develop` in one transaction and calls the hook with the states `preparing`, `prepared` and `committed`. The hook acts only on `committed` and only when that ref is among the updated ones. It fires for every ref update, so the shim filters on stdin without starting a process.
+Submitted features are detected through the `reference-transaction` hook. A fetch, and the fetch inside `git pull --rebase`, updates `refs/remotes/origin/develop` in one transaction and calls the hook with the states `preparing`, `prepared` and `committed`. The hook acts only on `committed` and only when that ref is among the updated ones. It fires for every ref update, so `git-wt harness-hook` checks stdin before it calls Git.
 
-`harness-hook.sh` is registered globally like `hook.sh` and exits before Python when `GIT_DIR` points into a `harness.git`, when the repository has no `harness.git`, or when the number of arguments matches no handled event. Git passes no event name to a hook from the config, so the shim derives it from the arguments: three for `post-checkout`, two for `pre-push`, one for `reference-transaction`. One registration then serves all events, and one override `hook.harness.enabled=false` in `harness.git/config` keeps harness operations from triggering it. The shim always exits with 0, even if Python fails to start. A non-zero exit would stop a `git push`, and in the state `prepared` it would abort the ref update of a `reference-transaction`.
+`git-wt harness-hook` is registered globally like the hook and exits before any harness work when `GIT_DIR` points into a `harness.git`, when the number of arguments matches no handled event or when the repository has no `harness.git`. Git passes no event name to a hook from the config, so the binary derives it from the number of arguments. Three mean `post-checkout`, two mean `pre-push` and one means `reference-transaction`. One registration then serves all events, and one override `hook.harness.enabled=false` in `harness.git/config` keeps harness operations from triggering it. The harness hook always exits with 0, even if it fails. A non-zero exit would stop a `git push`, and in the state `prepared` it would abort the ref update of a `reference-transaction`. The registration also exits with 0 when the binary is missing.
 
 A new worktree has no harness index yet. Its first checkout is forced and skips the snapshot, because comparing an empty index with `develop` would commit the deletion of every harness file. A checkout of the branch the harness already follows is skipped as well.
 
@@ -131,8 +136,8 @@ Never run `git worktree remove` or `move` against `harness.git`. `remove` and `m
 - The hook itself has no flags. `git wt add` provides them.
 - The calling worktree cannot be detected, so the source is the main worktree unless given.
 - Prompts need a terminal.
-- The registration is global. The cost of the shim is described under "Shim filters".
+- The registration is global. The cost of the hook is described under "Hook filters".
 - All messages go to stderr.
-- `/dev/tty` is opened twice, once for reading and once for writing, because a single `r+` handle is not seekable on a terminal.
+- `/dev/tty` is opened twice, once for reading and once for writing.
 - `git wt refresh --slot <m>` rewrites the record with the new slot. Teardown never sees the old slot, so its resources stay.
 - Git treats a missing directory as removed unless the worktree is locked. A worktree on an unmounted drive therefore gets torn down. `git worktree lock` prevents that.

@@ -7,33 +7,53 @@ A `post-checkout` hook prepares every new linked worktree. It copies the files l
 ## Requirements
 
 - Git 2.54 or newer (config-based hooks)
-- Python 3.12 or newer, no packages
+- Python 3.12 or newer, only for a plugin. The plugin needs no packages.
 
-The interpreter can be set with `git config worktree-init.python <path>` or the environment variable `WT_PYTHON`, for example for IDEs that start Git with a short `PATH`.
+The interpreter for a plugin can be set with `git config worktree-init.python <path>` or the environment variable `WT_PYTHON`, for example for IDEs that start Git with a short `PATH`.
 
 ## Install
 
-Register the hook, an alias and the interpreter in a user-level config file that is included from your global config. `<clone>` is the directory of this repository.
+`git-wt` is a single binary. Each release on GitHub has an archive `git-wt-<version>-<target>.tar.gz` for `aarch64-apple-darwin`, `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`, with a `.sha256` file next to it. The archive also holds `LICENSE` and `README.md`. Copy only `git-wt` onto `PATH`. Git then runs it for `git wt`:
 
 ```sh
-git config --file ~/.config/git/local hook.worktree-init.command <clone>/hook.sh
-git config --file ~/.config/git/local --add hook.worktree-init.event post-checkout
-git config --file ~/.config/git/local alias.wt '!<clone>/bin/git-wt'
-git config --file ~/.config/git/local --type=path worktree-init.python "$(command -v python3)"
+tar -xzf git-wt-<version>-<target>.tar.gz
+install -m 755 git-wt ~/.local/bin/
 ```
 
-To use the harness, register its shim for three events as well:
+With Homebrew, the repository acts as its own tap. The formula installs the release binary for macOS arm64 and Linux and prints the hook registration as caveats.
 
 ```sh
-git config --file ~/.config/git/local hook.harness.command 'f="<clone>/harness-hook.sh"; [ -f "$f" ] || exit 0; exec "$f"'
-git config --file ~/.config/git/local --add hook.harness.event post-checkout
-git config --file ~/.config/git/local --add hook.harness.event pre-push
-git config --file ~/.config/git/local --add hook.harness.event reference-transaction
+brew tap V1ncNet/git-worktree-init https://github.com/V1ncNet/git-worktree-init
+brew install V1ncNet/git-worktree-init/git-wt
 ```
 
-The shim does nothing in a repository without `harness.git` and never fails the Git command it runs in. The registration checks that the file exists, because `reference-transaction` and `pre-push` abort Git when their hook cannot run. Checking out a branch of this repository that lacks the shim would otherwise block every commit, fetch and push on the machine.
+macOS quarantines an archive downloaded in a browser and refuses to start the binary. Clear the flag once:
 
-The interpreter must be Python 3.12 or newer, so check that `python3` resolves to one, or pass the path of a suitable interpreter instead. The file `~/.config/git/local` takes effect only if the global config includes it, for example with `[include] path = ~/.config/git/local`. Use `--global` instead of `--file ~/.config/git/local` to skip the include.
+```sh
+xattr -d com.apple.quarantine git-wt
+```
+
+Register the hook with the absolute path of the binary. `<bin>` stands for that path, for example `/Users/me/.local/bin/git-wt`.
+
+```sh
+git config --global hook.worktree-init.command 'f="<bin>"; [ -x "$f" ] || exit 0; exec "$f" hook'
+git config --global --add hook.worktree-init.event post-checkout
+```
+
+To use the harness, register its hook for three events as well:
+
+```sh
+git config --global hook.harness.command 'f="<bin>"; [ -x "$f" ] || exit 0; exec "$f" harness-hook'
+git config --global --add hook.harness.event post-checkout
+git config --global --add hook.harness.event pre-push
+git config --global --add hook.harness.event reference-transaction
+```
+
+The path is absolute, because IDEs start Git with a short `PATH`. A hook that cannot start prints an error on every checkout of every repository. Both commands check that the binary exists and exit with 0 if it does not. `reference-transaction` and `pre-push` abort Git when their hook cannot run. The exit code of `post-checkout` becomes the exit code of `git checkout`. Without the check, a deleted or moved binary would block every commit, fetch and push on the machine. The commands do not pass `"$@"`, because Git appends the hook arguments itself.
+
+The harness hook does nothing in a repository without `harness.git` and never fails the Git command it runs in.
+
+Any config file that the global config includes works as well, for example `--file ~/.config/git/local` with `[include] path = ~/.config/git/local` in the global config.
 
 `core.hooksPath` is deliberately not used, because it switches off every hook in `.git/hooks`. Keep `hook.jobs` at 1 so hooks of the same event run one after another.
 
@@ -47,22 +67,51 @@ Nothing happens for a repository that has no `worktree-init.plugin`, no `worktre
 
 ### Nix
 
-The flake `github:V1ncNet/git-worktree-init` provides `packages.<system>.default` for `aarch64-darwin`, `x86_64-linux` and `aarch64-linux`. The package keeps the layout of this repository, so `<clone>` above becomes the store path of the package. It falls back to the Python of its nixpkgs input, which makes `worktree-init.python` optional. With home-manager:
+The flake `github:V1ncNet/git-worktree-init` provides `packages.<system>.default` for `aarch64-darwin`, `x86_64-linux` and `aarch64-linux`. The package builds the binary from source. A plugin falls back to the Python of its nixpkgs input, which makes `worktree-init.python` optional. With home-manager:
 
 ```nix
 let
   pkg = inputs.git-worktree-init.packages.${pkgs.stdenv.hostPlatform.system}.default;
 in
 {
-  programs.git.settings = {
-    hook.worktree-init = {
-      command = "${pkg}/hook.sh";
+  home.packages = [ pkg ];
+
+  programs.git.settings.hook = {
+    worktree-init = {
+      command = ''f="${pkg}/bin/git-wt"; [ -x "$f" ] || exit 0; exec "$f" hook'';
       event = "post-checkout";
     };
-    alias.wt = "!${pkg}/bin/git-wt";
+    harness = {
+      command = ''f="${pkg}/bin/git-wt"; [ -x "$f" ] || exit 0; exec "$f" harness-hook'';
+      event = [ "post-checkout" "pre-push" "reference-transaction" ];
+    };
   };
 }
 ```
+
+`home.packages` puts `git-wt` on `PATH`, so `git wt` works without an alias.
+
+## Upgrading from 0.1
+
+Version 0.1 ran from a clone of this repository. Its registration points at `hook.sh` and `harness-hook.sh`, which no longer exist, so every checkout fails until the hooks are registered again. No compatibility shims ship.
+
+A Nix or home-manager config that still uses `${pkg}/hook.sh` points at a file that no longer exists after the upgrade. Every checkout fails until you switch to the example under "Nix".
+
+Install the binary as described under "Install". Then replace both commands in the config file that holds the old registration. Version 0.1 registered into `~/.config/git/local`:
+
+```sh
+git config --file ~/.config/git/local hook.worktree-init.command 'f="<bin>"; [ -x "$f" ] || exit 0; exec "$f" hook'
+git config --file ~/.config/git/local hook.harness.command 'f="<bin>"; [ -x "$f" ] || exit 0; exec "$f" harness-hook'
+```
+
+The events stay as they are. Drop the alias, because Git finds `git-wt` on `PATH`. Drop `worktree-init.python` too, unless a repository uses a plugin and `python3` on `PATH` is older than 3.12.
+
+```sh
+git config --file ~/.config/git/local --unset alias.wt
+git config --file ~/.config/git/local --unset worktree-init.python
+```
+
+If you registered with `--global` instead, use `--global` in place of `--file ~/.config/git/local` in all four commands. `--unset` exits with 5 when the key is not set in that file. That exit code only means there is nothing to drop.
 
 ## Use
 
@@ -83,7 +132,7 @@ git wt prune
 - `git wt remove [-f | --force] <worktree>` calls the plugin's `teardown` while the files still exist, then forwards to `git worktree remove`. See "Teardown".
 - `git wt prune` calls the plugin's `teardown` for every recorded worktree that no longer exists. See "Teardown".
 
-`git wt -h`, `git wt add -h` and `git wt refresh -h` show the usage and the flags, including those of the plugin. Git answers `git wt --help` itself with the alias definition, so use `-h`. Help and usage errors exit with 129, like Git.
+`git wt -h`, `git wt add -h` and `git wt refresh -h` show the usage and the flags, including those of the plugin. Git answers `git wt --help` itself by looking for a man page, so use `-h`. Help and usage errors exit with 129, like Git. `git wt --version` prints the version.
 
 To copy from the current worktree instead of the main worktree, pass `--source .` or set `WT_SOURCE=$PWD`. A relative `--source` is made absolute by `git wt`.
 
@@ -157,7 +206,7 @@ All keys live under `worktree-init.`.
 | Key | Meaning |
 | --- | --- |
 | `plugin` | Path to the plugin, absolute or relative to the main worktree |
-| `python` | Interpreter for the hook and `git wt` |
+| `python` | Interpreter for the plugin |
 | `reservedSlots` | Space-separated slots never handed out. Default `0`, an empty value reserves nothing |
 | `ignorePaths` | Glob patterns for worktree paths to skip. Multi-valued, default `*/.claude/worktrees/*`, an empty value adds no pattern |
 | `interactive` | `false` switches the prompts off |
@@ -167,7 +216,7 @@ Plus one key per option, for example `slot` or `source`.
 
 ## Writing a plugin
 
-A plugin is a Python file, referenced by `worktree-init.plugin`. It may define:
+A plugin is a Python file, referenced by `worktree-init.plugin`. It needs Python 3.12 or newer. `git-wt` starts the interpreter with an embedded package `git_worktree_init`, so `from git_worktree_init.options import Option` works without an install. The plugin's output and the output of `ctx.run` go to the same stdout and stderr as in 0.1. It may define:
 
 | Name | Required | Purpose |
 | --- | --- | --- |
@@ -227,6 +276,12 @@ git wt prune
 ```
 
 During create or refresh, a failed teardown prints a warning but does not fail the new worktree.
+
+## Release
+
+The version lives in `Cargo.toml`. To release, bump `version` there and run `cargo build` so `Cargo.lock` follows. Commit the change as `Release <version>` on `main`, tag it `v<version>` and push the tag.
+
+The workflow `release.yml` then checks that the tag matches `Cargo.toml` and sits on `main`. It builds the three targets and publishes the GitHub release with archives and checksums. Then it commits the new version and checksums to `Formula/git-wt.rb` on `main`. A run started by hand builds the archives but publishes nothing.
 
 ## Failure and repair
 

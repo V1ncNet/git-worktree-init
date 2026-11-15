@@ -4,17 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-- Tests: `uvx pytest` (pytest is not installed globally). Single test: `uvx pytest tests/test_engine.py -k <name>`.
-- Requires Git 2.54+ (config-based hooks) and Python 3.12+.
+- Rust tests: `nix develop -c cargo test`. Single test: `nix develop -c cargo test --test hook <name>`.
+- Bridge tests: `uvx pytest` (pytest is not installed globally). It needs `target/debug/git-wt`, so run `cargo build` first.
+- Full check: `nix develop -c sh -c 'cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo build && cargo test && uvx pytest -q'`, then `nix flake check`.
+- Requires Git 2.54+ (config-based hooks). Python 3.12+ is needed only for plugins and the bridge tests.
 
 ## Constraints
 
-- Runtime code uses the Python standard library only. Never add a dependency to `pyproject.toml`.
-- `hook.sh` runs on every checkout of every repository. It stays POSIX `sh` and must exit before starting Python unless all filters pass. Don't add process spawns to the early filters (see "Shim filters" in `docs/architecture.md`).
-- The hook entry point is `python3 wti.py`, never `python -m`, to keep the caller's working directory off `sys.path`.
+- The only crates are `serde_json` and `libc`. A further crate needs a reason in the commit that adds it.
+- The bridge under `bridge/git_worktree_init/` uses the Python standard library only. Never add a dependency to `pyproject.toml`.
+- `git-wt hook` and `git-wt harness-hook` run on every checkout of every repository. Don't add process spawns to the early filters in `src/hook.rs` and `src/cli.rs` (see "Hook filters" in `docs/architecture.md`).
+- The bridge removes the caller's working directory from `sys.path` before its first import (see "Python bridge" in `docs/architecture.md`).
 - All messages go to stderr. Only help output (`-h`) goes to stdout.
 - Help and usage errors follow Git. Help phrases are lowercase without a final period, and the exit code is 129.
-- The tool's own Git calls and every plugin subprocess run without `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and `GIT_PREFIX` (see `gitenv.py`). The `git worktree add` forwarded by `git wt add` keeps the caller's environment on purpose.
+- The tool's own Git calls and every plugin subprocess run without `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and `GIT_PREFIX` (see `src/gitenv.rs`). The `git worktree add` forwarded by `git wt add` keeps the caller's environment on purpose.
 
 ## Docs
 

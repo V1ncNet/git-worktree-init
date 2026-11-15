@@ -1,0 +1,108 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        if: github.event_name == 'push'
+        with:
+          fetch-depth: 0
+      - name: Verify tag and branch
+        if: github.event_name == 'push'
+        run: |
+          crate_version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if [ "${GITHUB_REF_NAME#v}" != "$crate_version" ]; then
+            echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $crate_version" >&2
+            exit 1
+          fi
+          git merge-base --is-ancestor HEAD origin/main
+
+  build:
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install musl-tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Pack archive
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          name="git-wt-${version}-${{ matrix.target }}"
+          mkdir dist
+          cp "target/${{ matrix.target }}/release/git-wt" LICENSE README.md dist/
+          tar -czf "$name.tar.gz" -C dist git-wt LICENSE README.md
+          shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: git-wt-${{ matrix.target }}
+          path: |
+            git-wt-*.tar.gz
+            git-wt-*.tar.gz.sha256
+
+  release:
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes assets/*
+
+  formula:
+    if: github.event_name == 'push'
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Update formula
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          sed -i "s/^  version \".*\"$/  version \"$version\"/" Formula/git-wt.rb
+          for target in aarch64-apple-darwin x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
+            sum=$(cut -d ' ' -f 1 "assets/git-wt-${version}-${target}.tar.gz.sha256")
+            sed -i "s/sha256 \"[0-9a-f]*\" # ${target}\$/sha256 \"${sum}\" # ${target}/" Formula/git-wt.rb
+          done
+      - name: Commit and push
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Formula/git-wt.rb
+          git diff --cached --quiet || git commit -m "Update Homebrew formula to ${GITHUB_REF_NAME#v}"
+          git push origin main
