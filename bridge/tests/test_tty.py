@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from helpers import CORE, EXAMPLE_PLUGIN, git
+from helpers import EXAMPLE_PLUGIN, ROOT, git
 
 ZEROS = "0" * 40
 PROMPT = "? Slot of the worktree (1) › ".encode()
@@ -17,7 +17,7 @@ DEADLINE = 30
 
 
 def binary() -> Path:
-    path = Path(os.environ.get("GIT_WT_BIN") or CORE / "target" / "debug" / "git-wt")
+    path = Path(os.environ.get("GIT_WT_BIN") or ROOT / "target" / "debug" / "git-wt")
     if not path.is_file():
         pytest.fail(f"git-wt binary not found at {path}, run cargo build first")
     return path

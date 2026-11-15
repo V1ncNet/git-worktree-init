@@ -30,7 +30,7 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
-      - run: python -m pytest
+      - run: python -m pytest bridge/tests
 
   nix:
     runs-on: ubuntu-latest

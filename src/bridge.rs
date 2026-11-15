@@ -23,7 +23,7 @@ sources = json.loads(sys.argv[1])
 package = types.ModuleType("git_worktree_init")
 package.__path__ = []
 sys.modules["git_worktree_init"] = package
-for name in ("gitenv", "config", "options", "context", "bridge"):
+for name in ("gitenv", "options", "context", "bridge"):
     module = types.ModuleType(f"git_worktree_init.{name}")
     module.__file__ = f"<git-wt>/git_worktree_init/{name}.py"
     sys.modules[module.__name__] = module
@@ -125,11 +125,10 @@ fn non_empty(value: Option<String>) -> Option<String> {
 
 fn embedded_sources() -> String {
     json!({
-        "options": include_str!("../git_worktree_init/options.py"),
-        "config": include_str!("../git_worktree_init/config.py"),
-        "context": include_str!("../git_worktree_init/context.py"),
-        "gitenv": include_str!("../git_worktree_init/gitenv.py"),
-        "bridge": include_str!("../git_worktree_init/bridge.py"),
+        "options": include_str!("../bridge/git_worktree_init/options.py"),
+        "context": include_str!("../bridge/git_worktree_init/context.py"),
+        "gitenv": include_str!("../bridge/git_worktree_init/gitenv.py"),
+        "bridge": include_str!("../bridge/git_worktree_init/bridge.py"),
     })
     .to_string()
 }

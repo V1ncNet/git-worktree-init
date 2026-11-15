@@ -1279,3 +1279,80 @@ fn harness_hook_ignores_unrelated_reference_transactions() {
     assert_eq!(result.status.code(), Some(0));
     assert_eq!(merges(&sandbox, &main).len(), 1);
 }
+
+const README: &str = include_str!("../README.md");
+
+fn readme_registrations() -> Vec<&'static str> {
+    README
+        .lines()
+        .filter(|line| line.starts_with("git config --global") && line.contains(".command "))
+        .collect()
+}
+
+fn readme_install_lines() -> Vec<&'static str> {
+    let install = &README[README.find("## Install").unwrap()..README.find("### Nix").unwrap()];
+    install
+        .lines()
+        .filter(|line| line.starts_with("git config --global") && line.contains(" hook."))
+        .collect()
+}
+
+fn install_from_readme(sandbox: &Sandbox, binary: &str) {
+    for line in readme_install_lines() {
+        let command = line.replace("<bin>", binary);
+        let output = sandbox
+            .command("sh", &sandbox.root)
+            .args(["-c", &command])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{command}: {}",
+            text(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn readme_registrations_guard_missing_binary() {
+    let registrations = readme_registrations();
+    let guard = r#"'f="<bin>"; [ -x "$f" ] || exit 0; exec "$f" "#;
+
+    assert!(registrations.len() >= 2, "{registrations:?}");
+    for line in &registrations {
+        let hook = line.ends_with(&format!("{guard}hook'"));
+        let harness_hook = line.ends_with(&format!("{guard}harness-hook'"));
+        assert!(hook || harness_hook, "{line}");
+    }
+    assert_eq!(readme_install_lines().len(), 6);
+}
+
+#[test]
+fn readme_install_with_missing_binary_never_blocks_git() {
+    let sandbox = Sandbox::new();
+    let main = harnessed(&sandbox);
+    fs::write(main.join(".worktreeinclude"), ".env\n").unwrap();
+    install_from_readme(&sandbox, "/nonexistent/git-wt");
+
+    let add = sandbox.git(&main, &["worktree", "add", "-q", "-b", "w", "../w"]);
+    let commit = sandbox.git(&main, &["commit", "-q", "--allow-empty", "-m", "Empty"]);
+
+    assert!(add.status.success(), "{}", text(&add.stderr));
+    assert!(commit.status.success(), "{}", text(&commit.stderr));
+    assert_eq!(text(&add.stderr) + &text(&commit.stderr), "");
+}
+
+#[test]
+fn readme_install_runs_binary() {
+    let sandbox = Sandbox::new();
+    let main = harnessed(&sandbox);
+    fs::write(main.join(".worktreeinclude"), ".env\n").unwrap();
+    fs::write(main.join(".env"), "SECRET=1\n").unwrap();
+    install_from_readme(&sandbox, wt_bin());
+
+    let add = sandbox.git(&main, &["worktree", "add", "-q", "-b", "w", "../w"]);
+
+    assert!(add.status.success(), "{}", text(&add.stderr));
+    assert_eq!(read(&sandbox.root.join("w/.env")), "SECRET=1\n");
+    assert!(harness_root(&main).join("worktrees/w/HEAD").is_file());
+}

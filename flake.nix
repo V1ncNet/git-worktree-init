@@ -15,19 +15,14 @@
     in
     {
       packages = forAllSystems (pkgs: {
-        default = pkgs.stdenvNoCC.mkDerivation {
-          pname = "git-worktree-init";
-          version = "0.1.0";
+        default = pkgs.rustPlatform.buildRustPackage {
+          pname = "git-wt";
+          version = (pkgs.lib.importTOML ./Cargo.toml).package.version;
           src = self;
+          cargoLock.lockFile = ./Cargo.lock;
 
-          installPhase = ''
-            mkdir -p $out
-            cp -r hook.sh wti.py git_worktree_init bin $out/
-            substituteInPlace $out/hook.sh $out/bin/git-wt \
-              --replace-fail '"''${python:-python3}"' '"''${python:-${pkgs.python3.interpreter}}"'
-          '';
-
-          passthru.python = pkgs.python3;
+          env.WT_DEFAULT_PYTHON = "${pkgs.python3}/bin/python3";
+          doCheck = false;
 
           meta = {
             description = "Prepare new linked Git worktrees from a post-checkout hook";

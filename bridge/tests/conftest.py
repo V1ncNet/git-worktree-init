@@ -3,9 +3,9 @@ import sys
 
 import pytest
 
-from helpers import CORE, git
+from helpers import BRIDGE, git
 
-sys.path.insert(0, str(CORE))
+sys.path.insert(0, str(BRIDGE))
 
 LEAKING = (
     "GIT_DIR",
