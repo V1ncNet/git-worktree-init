@@ -7,6 +7,7 @@ pub mod gitenv;
 pub mod glob;
 pub mod include;
 pub mod options;
+pub mod prompt;
 pub mod records;
 pub mod slots;
 pub mod worktrees;
