@@ -737,6 +737,148 @@ fn new_worktree_does_not_snapshot_deletions() {
     assert_eq!(log, "Seed\n");
 }
 
+fn unattached(sandbox: &Sandbox, main: &Path) -> PathBuf {
+    git_ok(
+        sandbox,
+        main,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--no-checkout",
+            "-b",
+            "tmp/x",
+            "../x",
+        ],
+    );
+    let target = sandbox.root.join("x");
+    git_ok(sandbox, &target, &["reset", "-q", "--hard"]);
+    git_ok(sandbox, &target, &["branch", "-m", "feature/x"]);
+    target
+}
+
+fn admin_head(main: &Path, name: &str) -> String {
+    read(&harness_root(main).join("worktrees").join(name).join("HEAD"))
+}
+
+#[test]
+fn new_admin_dir_holds_no_real_branch() {
+    let sandbox = Sandbox::new();
+    let main = seeded(&sandbox);
+    let target = unattached(&sandbox, &main);
+
+    assert!(!harness::snapshot(&target, &env_of(&sandbox)).unwrap());
+
+    assert_eq!(admin_head(&main, "x"), "ref: refs/heads/wt-unattached/x\n");
+}
+
+#[test]
+fn unattached_worktree_does_not_block_develop() {
+    let sandbox = Sandbox::new();
+    let main = seeded(&sandbox);
+    let target = unattached(&sandbox, &main);
+    harness::snapshot(&target, &env_of(&sandbox)).unwrap();
+    git_ok(&sandbox, &main, &["branch", "develop"]);
+    git_ok(&sandbox, &main, &["checkout", "-q", "-b", "feature/m"]);
+
+    let result = sandbox.git(&main, &["checkout", "develop"]);
+
+    assert!(
+        !text(&result.stderr).contains("already used"),
+        "{}",
+        text(&result.stderr)
+    );
+    assert_eq!(current(&sandbox, &main), "develop");
+}
+
+#[test]
+fn stale_admin_dir_on_develop_is_released() {
+    let sandbox = Sandbox::new();
+    let main = seeded(&sandbox);
+    let target = unattached(&sandbox, &main);
+    harness::snapshot(&target, &env_of(&sandbox)).unwrap();
+    let admin = harness_root(&main).join("worktrees/x");
+    fs::write(admin.join("HEAD"), "ref: refs/heads/develop\n").unwrap();
+    git_ok(&sandbox, &main, &["branch", "develop"]);
+    git_ok(&sandbox, &main, &["checkout", "-q", "-b", "feature/m"]);
+
+    git_ok(&sandbox, &main, &["checkout", "-q", "develop"]);
+
+    assert_eq!(current(&sandbox, &main), "develop");
+    assert_eq!(admin_head(&main, "x"), "ref: refs/heads/wt-unattached/x\n");
+}
+
+#[test]
+fn push_attaches_unattached_worktree_to_its_branch() {
+    let sandbox = Sandbox::new();
+    let (_, remote) = pushing(&sandbox);
+    let main = sandbox.root.join("proj");
+    let target = unattached(&sandbox, &main);
+
+    let result = sandbox.git(&target, &["push", "-q", "origin", "feature/x"]);
+
+    assert!(result.status.success(), "{}", text(&result.stderr));
+    assert_eq!(current(&sandbox, &target), "feature/x");
+    assert_eq!(read(&target.join("CLAUDE.md")), "develop");
+    assert_eq!(
+        git_ok(&sandbox, &remote, &["show", "feature/x:CLAUDE.md"]),
+        "develop"
+    );
+}
+
+#[test]
+fn late_attach_keeps_existing_files() {
+    let sandbox = Sandbox::new();
+    let (_, remote) = pushing(&sandbox);
+    let main = sandbox.root.join("proj");
+    let target = unattached(&sandbox, &main);
+    write(&target.join("CLAUDE.md"), "local");
+    write(&target.join(".claude/handoffs/h.md"), "handoff");
+
+    let result = sandbox.git(&target, &["push", "-q", "origin", "feature/x"]);
+
+    assert!(result.status.success(), "{}", text(&result.stderr));
+    assert_eq!(read(&target.join("CLAUDE.md")), "local");
+    assert_eq!(
+        git_ok(
+            &sandbox,
+            &remote,
+            &["show", "feature/x:.claude/handoffs/h.md"]
+        ),
+        "handoff"
+    );
+    assert_eq!(
+        hgit(&sandbox, &main, &["show", "develop:CLAUDE.md"]),
+        "develop"
+    );
+}
+
+#[test]
+fn push_from_detached_unattached_worktree_skips_harness() {
+    let sandbox = Sandbox::new();
+    let (_, remote) = pushing(&sandbox);
+    let main = sandbox.root.join("proj");
+    let target = unattached(&sandbox, &main);
+    git_ok(&sandbox, &target, &["checkout", "-q", "--detach"]);
+
+    let result = sandbox.git(
+        &target,
+        &["push", "-q", "origin", "HEAD:refs/heads/feature/x"],
+    );
+
+    assert!(result.status.success(), "{}", text(&result.stderr));
+    assert!(
+        !text(&result.stderr).contains("harness"),
+        "{}",
+        text(&result.stderr)
+    );
+    assert!(
+        git_ok(&sandbox, &remote, &["branch", "--list"])
+            .lines()
+            .all(|b| !b.contains("wt-unattached"))
+    );
+}
+
 #[test]
 fn rebase_with_autostash_leaves_harness_untouched() {
     let sandbox = Sandbox::new();

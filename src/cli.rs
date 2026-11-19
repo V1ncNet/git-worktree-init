@@ -365,6 +365,13 @@ fn harness_sync(env: &Env) -> i32 {
         .map_err(Error::from)
         .and_then(|cwd| worktrees::toplevel(&cwd, &gitenv::sanitized(env, &[])))
         .and_then(|target| {
+            if !harness::attach_late(&target, env)? {
+                eprintln!(
+                    "worktree-init: harness of {} has no branch to attach",
+                    target.display()
+                );
+                return Ok(false);
+            }
             harness::snapshot(&target, env)?;
             harness::push(&target, env)
         });
@@ -493,8 +500,10 @@ fn run_harness_event(event: HarnessEvent, cwd: &Path, env: &Env) -> Result<()> {
             }
         }
         HarnessEvent::PrePush => {
-            harness::snapshot(&target, env)?;
-            harness::push(&target, env)?;
+            if harness::attach_late(&target, env)? {
+                harness::snapshot(&target, env)?;
+                harness::push(&target, env)?;
+            }
         }
         HarnessEvent::ReferenceTransaction => {
             let main = worktrees::discover(&target, &clean)?.main;

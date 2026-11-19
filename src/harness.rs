@@ -11,6 +11,7 @@ use crate::worktrees;
 pub const DEFAULT_BRANCH: &str = "develop";
 pub const REMOTE: &str = "harness";
 pub const ANCHOR: &str = "harness-anchor";
+pub const UNATTACHED: &str = "refs/heads/wt-unattached";
 pub const SNAPSHOT_SUBJECT: &str = "Snapshot harness state";
 pub const NON_INTERACTIVE_SSH: &str = "ssh -o BatchMode=yes -o ConnectTimeout=10";
 pub const UPSTREAM: &str = "refs/remotes/origin/develop";
@@ -96,12 +97,38 @@ pub fn attach(target: &Path, branch: &str, env: &Env) -> Result<()> {
         };
         git(target, &["branch", "--no-track", branch, &start], env)?;
     }
+    release_unattached(target, env)?;
     let mut checkout = vec!["checkout", "-q"];
     if fresh {
         checkout.push("-f");
     }
     checkout.push(branch);
     git(target, &checkout, env).map(drop)
+}
+
+pub fn attach_late(target: &Path, env: &Env) -> Result<bool> {
+    if index(target, env)?.exists() {
+        return Ok(true);
+    }
+    let args = ["symbolic-ref", "-q", "--short", "HEAD"];
+    let clean = gitenv::sanitized(env, &[]);
+    let (_, branch, _) = gitenv::git_status(target, &args, &clean)?;
+    let branch = branch.trim();
+    if branch.is_empty() {
+        return Ok(false);
+    }
+    let local = format!("refs/heads/{branch}");
+    if !exists(target, &local, env)? {
+        let Some(start) = start_point(target, branch, env)? else {
+            return Ok(false);
+        };
+        git(target, &["branch", "--no-track", branch, &start], env)?;
+    }
+    release_unattached(target, env)?;
+    git(target, &["symbolic-ref", "HEAD", &local], env)?;
+    git(target, &["reset", "-q"], env)?;
+    restore_missing(target, env)?;
+    Ok(true)
 }
 
 pub fn snapshot(target: &Path, env: &Env) -> Result<bool> {
@@ -354,6 +381,40 @@ fn add_hidden(target: &Path, env: &Env) -> Result<()> {
     git(target, &add, env).map(drop)
 }
 
+fn restore_missing(target: &Path, env: &Env) -> Result<()> {
+    let listing = git(target, &["ls-files", "-z", "--deleted"], env)?;
+    let paths: Vec<&str> = listing
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .collect();
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let mut checkout = vec!["checkout", "-q", "--"];
+    checkout.extend(paths);
+    git(target, &checkout, env).map(drop)
+}
+
+fn release_unattached(target: &Path, env: &Env) -> Result<()> {
+    let (_, common) = code_dirs(target, &gitenv::sanitized(env, &[]))?;
+    let Ok(entries) = fs::read_dir(git_dir(&common).join("worktrees")) else {
+        return Ok(());
+    };
+    for entry in entries {
+        let admin = entry?.path();
+        if admin.join("HEAD").is_file() && !admin.join("index").exists() {
+            write_unattached_head(&admin)?;
+        }
+    }
+    Ok(())
+}
+
+fn write_unattached_head(admin: &Path) -> Result<()> {
+    let name = admin.file_name().unwrap_or_default().to_string_lossy();
+    fs::write(admin.join("HEAD"), format!("ref: {UNATTACHED}/{name}\n"))?;
+    Ok(())
+}
+
 fn start_point(target: &Path, branch: &str, env: &Env) -> Result<Option<String>> {
     fetch(target, branch, env)?;
     let fetched = format!("refs/remotes/{REMOTE}/{branch}");
@@ -482,11 +543,7 @@ fn create_admin(admin: &Path, anchor: &Path) -> Result<()> {
     gitdir.push(b'\n');
     fs::write(admin.join("gitdir"), gitdir)?;
     fs::write(admin.join("commondir"), "../..\n")?;
-    fs::write(
-        admin.join("HEAD"),
-        format!("ref: refs/heads/{DEFAULT_BRANCH}\n"),
-    )?;
-    Ok(())
+    write_unattached_head(admin)
 }
 
 fn runtime_patterns(exclude: &Path) -> Result<Vec<String>> {
