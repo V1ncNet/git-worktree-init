@@ -928,6 +928,26 @@ fn switch_resumes_pending_attach_before_snapshot() {
 }
 
 #[test]
+fn release_keeps_branch_of_pending_attach() {
+    let sandbox = Sandbox::new();
+    pushing(&sandbox);
+    let main = sandbox.root.join("proj");
+    let target = unattached(&sandbox, &main);
+    let env = env_of(&sandbox);
+    assert!(harness::attach_late(&target, &env).unwrap());
+    let admin = harness_root(&main).join("worktrees/x");
+    fs::remove_file(admin.join("index")).unwrap();
+    fs::write(admin.join(harness::ATTACH_PENDING), "").unwrap();
+
+    git_ok(&sandbox, &main, &["checkout", "-q", "-b", "feature/m"]);
+
+    assert_eq!(admin_head(&main, "x"), "ref: refs/heads/feature/x\n");
+    assert!(harness::attach_late(&target, &env).unwrap());
+    assert_eq!(current(&sandbox, &target), "feature/x");
+    assert_eq!(read(&target.join("CLAUDE.md")), "develop");
+}
+
+#[test]
 fn late_attach_restores_paths_literally() {
     let sandbox = Sandbox::new();
     pushing(&sandbox);

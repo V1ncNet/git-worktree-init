@@ -448,11 +448,17 @@ fn release_unattached(target: &Path, env: &Env) -> Result<()> {
     };
     for entry in entries {
         let admin = entry?.path();
-        if admin.join("HEAD").is_file() && !admin.join("index").exists() {
+        if is_unattached(&admin) {
             write_unattached_head(&admin)?;
         }
     }
     Ok(())
+}
+
+fn is_unattached(admin: &Path) -> bool {
+    admin.join("HEAD").is_file()
+        && !admin.join("index").exists()
+        && !admin.join(ATTACH_PENDING).exists()
 }
 
 fn write_unattached_head(admin: &Path) -> Result<()> {
