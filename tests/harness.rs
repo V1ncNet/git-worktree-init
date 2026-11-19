@@ -902,6 +902,32 @@ fn pending_attach_without_index_resets_before_resume() {
 }
 
 #[test]
+fn switch_resumes_pending_attach_before_snapshot() {
+    let sandbox = Sandbox::new();
+    pushing(&sandbox);
+    let main = sandbox.root.join("proj");
+    let target = unattached(&sandbox, &main);
+    let env = env_of(&sandbox);
+    assert!(harness::attach_late(&target, &env).unwrap());
+    let admin = harness_root(&main).join("worktrees/x");
+    fs::write(admin.join(harness::ATTACH_PENDING), "").unwrap();
+    fs::remove_file(target.join("CLAUDE.md")).unwrap();
+    write(&target.join(".claude/h.md"), "handoff");
+
+    git_ok(&sandbox, &target, &["checkout", "-q", "-b", "feature/y"]);
+
+    assert_eq!(current(&sandbox, &target), "feature/y");
+    assert!(!admin.join(harness::ATTACH_PENDING).exists());
+    let tree = hgit(
+        &sandbox,
+        &target,
+        &["ls-tree", "-r", "--name-only", "feature/x"],
+    );
+    assert!(tree.lines().any(|path| path == "CLAUDE.md"));
+    assert!(tree.lines().any(|path| path == ".claude/h.md"));
+}
+
+#[test]
 fn late_attach_restores_paths_literally() {
     let sandbox = Sandbox::new();
     pushing(&sandbox);

@@ -182,6 +182,10 @@ pub fn snapshot(target: &Path, env: &Env) -> Result<bool> {
 }
 
 pub fn switch(target: &Path, branch: &str, env: &Env) -> Result<()> {
+    let pending = pending(target, env)?;
+    if pending.exists() {
+        resume_attach(target, &pending, env)?;
+    }
     if current_branch(target, env)? == branch && index(target, env)?.exists() {
         return Ok(());
     }
