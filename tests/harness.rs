@@ -854,6 +854,25 @@ fn late_attach_keeps_existing_files() {
 }
 
 #[test]
+fn late_attach_restores_paths_literally() {
+    let sandbox = Sandbox::new();
+    pushing(&sandbox);
+    let main = sandbox.root.join("proj");
+    write(&main.join(".claude/a.md"), "develop");
+    write(&main.join(".claude/[a].md"), "glob");
+    hgit(&sandbox, &main, &["add", ".claude/a.md", ".claude/[a].md"]);
+    hgit(&sandbox, &main, &["commit", "-q", "-m", "Add glob name"]);
+    let target = unattached(&sandbox, &main);
+    write(&target.join(".claude/a.md"), "local");
+
+    let result = sandbox.git(&target, &["push", "-q", "origin", "feature/x"]);
+
+    assert!(result.status.success(), "{}", text(&result.stderr));
+    assert_eq!(read(&target.join(".claude/a.md")), "local");
+    assert_eq!(read(&target.join(".claude/[a].md")), "glob");
+}
+
+#[test]
 fn push_from_detached_unattached_worktree_skips_harness() {
     let sandbox = Sandbox::new();
     let (_, remote) = pushing(&sandbox);

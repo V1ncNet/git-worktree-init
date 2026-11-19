@@ -390,7 +390,7 @@ fn restore_missing(target: &Path, env: &Env) -> Result<()> {
     if paths.is_empty() {
         return Ok(());
     }
-    let mut checkout = vec!["checkout", "-q", "--"];
+    let mut checkout = vec!["--literal-pathspecs", "checkout", "-q", "--"];
     checkout.extend(paths);
     git(target, &checkout, env).map(drop)
 }
