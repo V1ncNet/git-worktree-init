@@ -1,5 +1,5 @@
 use std::collections::{BTreeSet, HashSet};
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
@@ -11,6 +11,9 @@ use crate::worktrees;
 pub const DEFAULT_BRANCH: &str = "develop";
 pub const REMOTE: &str = "harness";
 pub const ANCHOR: &str = "harness-anchor";
+pub const UNATTACHED: &str = "refs/heads/wt-unattached";
+pub const ATTACH_PENDING: &str = "wt-attach-pending";
+pub const ATTACH_LOCK: &str = "attach.lock";
 pub const SNAPSHOT_SUBJECT: &str = "Snapshot harness state";
 pub const NON_INTERACTIVE_SSH: &str = "ssh -o BatchMode=yes -o ConnectTimeout=10";
 pub const UPSTREAM: &str = "refs/remotes/origin/develop";
@@ -96,12 +99,48 @@ pub fn attach(target: &Path, branch: &str, env: &Env) -> Result<()> {
         };
         git(target, &["branch", "--no-track", branch, &start], env)?;
     }
+    let _lock = attach_lock(target, env)?;
+    release_unattached(target, env)?;
     let mut checkout = vec!["checkout", "-q"];
     if fresh {
         checkout.push("-f");
     }
     checkout.push(branch);
     git(target, &checkout, env).map(drop)
+}
+
+pub fn attach_late(target: &Path, env: &Env) -> Result<bool> {
+    let pending = pending(target, env)?;
+    if pending.exists() {
+        resume_attach(target, &pending, env)?;
+        return Ok(true);
+    }
+    if index(target, env)?.exists() {
+        return Ok(true);
+    }
+    let args = ["symbolic-ref", "-q", "--short", "HEAD"];
+    let clean = gitenv::sanitized(env, &[]);
+    let (_, branch, _) = gitenv::git_status(target, &args, &clean)?;
+    let branch = branch.trim();
+    if branch.is_empty() {
+        return Ok(false);
+    }
+    let local = format!("refs/heads/{branch}");
+    if !exists(target, &local, env)? {
+        let Some(start) = start_point(target, branch, env)? else {
+            return Ok(false);
+        };
+        git(target, &["branch", "--no-track", branch, &start], env)?;
+    }
+    {
+        let _lock = attach_lock(target, env)?;
+        release_unattached(target, env)?;
+        git(target, &["symbolic-ref", "HEAD", &local], env)?;
+        fs::write(&pending, "")?;
+        git(target, &["reset", "-q"], env)?;
+    }
+    finish_attach(target, &pending, env)?;
+    Ok(true)
 }
 
 pub fn snapshot(target: &Path, env: &Env) -> Result<bool> {
@@ -112,6 +151,11 @@ pub fn snapshot(target: &Path, env: &Env) -> Result<bool> {
     if index.with_file_name("MERGE_HEAD").exists() {
         let shown = target.display();
         eprintln!("worktree-init: harness merge is still open in {shown}, snapshot skipped");
+        return Ok(false);
+    }
+    if index.with_file_name(ATTACH_PENDING).exists() {
+        let shown = target.display();
+        eprintln!("worktree-init: harness attach is unfinished in {shown}, snapshot skipped");
         return Ok(false);
     }
     if every_file_missing(target, env)? {
@@ -138,6 +182,10 @@ pub fn snapshot(target: &Path, env: &Env) -> Result<bool> {
 }
 
 pub fn switch(target: &Path, branch: &str, env: &Env) -> Result<()> {
+    let pending = pending(target, env)?;
+    if pending.exists() {
+        resume_attach(target, &pending, env)?;
+    }
     if current_branch(target, env)? == branch && index(target, env)?.exists() {
         return Ok(());
     }
@@ -354,6 +402,71 @@ fn add_hidden(target: &Path, env: &Env) -> Result<()> {
     git(target, &add, env).map(drop)
 }
 
+fn attach_lock(target: &Path, env: &Env) -> Result<File> {
+    let (_, common) = code_dirs(target, &gitenv::sanitized(env, &[]))?;
+    let handle = File::create(git_dir(&common).join(ATTACH_LOCK))?;
+    handle.lock()?;
+    Ok(handle)
+}
+
+fn pending(target: &Path, env: &Env) -> Result<PathBuf> {
+    Ok(index(target, env)?.with_file_name(ATTACH_PENDING))
+}
+
+fn resume_attach(target: &Path, pending: &Path, env: &Env) -> Result<()> {
+    if !index(target, env)?.exists() {
+        let _lock = attach_lock(target, env)?;
+        git(target, &["reset", "-q"], env)?;
+    }
+    finish_attach(target, pending, env)
+}
+
+fn finish_attach(target: &Path, pending: &Path, env: &Env) -> Result<()> {
+    restore_missing(target, env)?;
+    fs::remove_file(pending)?;
+    Ok(())
+}
+
+fn restore_missing(target: &Path, env: &Env) -> Result<()> {
+    let listing = git(target, &["ls-files", "-z", "--deleted"], env)?;
+    let paths: Vec<&str> = listing
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .collect();
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let mut checkout = vec!["--literal-pathspecs", "checkout", "-q", "--"];
+    checkout.extend(paths);
+    git(target, &checkout, env).map(drop)
+}
+
+fn release_unattached(target: &Path, env: &Env) -> Result<()> {
+    let (_, common) = code_dirs(target, &gitenv::sanitized(env, &[]))?;
+    let Ok(entries) = fs::read_dir(git_dir(&common).join("worktrees")) else {
+        return Ok(());
+    };
+    for entry in entries {
+        let admin = entry?.path();
+        if is_unattached(&admin) {
+            write_unattached_head(&admin)?;
+        }
+    }
+    Ok(())
+}
+
+fn is_unattached(admin: &Path) -> bool {
+    admin.join("HEAD").is_file()
+        && !admin.join("index").exists()
+        && !admin.join(ATTACH_PENDING).exists()
+}
+
+fn write_unattached_head(admin: &Path) -> Result<()> {
+    let name = admin.file_name().unwrap_or_default().to_string_lossy();
+    fs::write(admin.join("HEAD"), format!("ref: {UNATTACHED}/{name}\n"))?;
+    Ok(())
+}
+
 fn start_point(target: &Path, branch: &str, env: &Env) -> Result<Option<String>> {
     fetch(target, branch, env)?;
     let fetched = format!("refs/remotes/{REMOTE}/{branch}");
@@ -482,11 +595,7 @@ fn create_admin(admin: &Path, anchor: &Path) -> Result<()> {
     gitdir.push(b'\n');
     fs::write(admin.join("gitdir"), gitdir)?;
     fs::write(admin.join("commondir"), "../..\n")?;
-    fs::write(
-        admin.join("HEAD"),
-        format!("ref: refs/heads/{DEFAULT_BRANCH}\n"),
-    )?;
-    Ok(())
+    write_unattached_head(admin)
 }
 
 fn runtime_patterns(exclude: &Path) -> Result<Vec<String>> {
