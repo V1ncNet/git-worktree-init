@@ -1,24 +1,24 @@
 class GitWt < Formula
   desc "Prepare new linked Git worktrees from a post-checkout hook"
   homepage "https://github.com/V1ncNet/git-worktree-init"
-  version "0.2.0"
+  version "0.2.1"
   license "MIT"
 
   on_macos do
     on_arm do
       url "https://github.com/V1ncNet/git-worktree-init/releases/download/v#{version}/git-wt-#{version}-aarch64-apple-darwin.tar.gz"
-      sha256 "af15088ce075be9c0a6ce69b45e152a7d87e9f95638733ae1fa1b3b662ab7ccb" # aarch64-apple-darwin
+      sha256 "1c4e002fd54394ff012f9b7c32862fb36ecaccaecdccd0a0daba0693808df18b" # aarch64-apple-darwin
     end
   end
 
   on_linux do
     on_intel do
       url "https://github.com/V1ncNet/git-worktree-init/releases/download/v#{version}/git-wt-#{version}-x86_64-unknown-linux-musl.tar.gz"
-      sha256 "d7bf791990aaa59d78c20488d8b780e5a460fdcf7edfd2e2d7b9296663157615" # x86_64-unknown-linux-musl
+      sha256 "0bff96f808c528701699bfaab9f30ae7d7583a42a63ff48ebdf4e23500a6a769" # x86_64-unknown-linux-musl
     end
     on_arm do
       url "https://github.com/V1ncNet/git-worktree-init/releases/download/v#{version}/git-wt-#{version}-aarch64-unknown-linux-musl.tar.gz"
-      sha256 "0dfda5546db1eb37ba8106d6790593f3ddf54a19df5a9266c027e0113a7d32d0" # aarch64-unknown-linux-musl
+      sha256 "2974962a4ca9b1f931bf0608b19f414d820b93da98d68a6e2dd8fd0d745f6171" # aarch64-unknown-linux-musl
     end
   end
 
