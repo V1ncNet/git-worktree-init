@@ -112,7 +112,7 @@ pub fn attach(target: &Path, branch: &str, env: &Env) -> Result<()> {
 pub fn attach_late(target: &Path, env: &Env) -> Result<bool> {
     let pending = pending(target, env)?;
     if pending.exists() {
-        finish_attach(target, &pending, env)?;
+        resume_attach(target, &pending, env)?;
         return Ok(true);
     }
     if index(target, env)?.exists() {
@@ -407,6 +407,14 @@ fn attach_lock(target: &Path, env: &Env) -> Result<File> {
 
 fn pending(target: &Path, env: &Env) -> Result<PathBuf> {
     Ok(index(target, env)?.with_file_name(ATTACH_PENDING))
+}
+
+fn resume_attach(target: &Path, pending: &Path, env: &Env) -> Result<()> {
+    if !index(target, env)?.exists() {
+        let _lock = attach_lock(target, env)?;
+        git(target, &["reset", "-q"], env)?;
+    }
+    finish_attach(target, pending, env)
 }
 
 fn finish_attach(target: &Path, pending: &Path, env: &Env) -> Result<()> {

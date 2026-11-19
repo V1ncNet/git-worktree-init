@@ -878,6 +878,30 @@ fn unfinished_late_attach_resumes_before_snapshot() {
 }
 
 #[test]
+fn pending_attach_without_index_resets_before_resume() {
+    let sandbox = Sandbox::new();
+    pushing(&sandbox);
+    let main = sandbox.root.join("proj");
+    let target = unattached(&sandbox, &main);
+    let env = env_of(&sandbox);
+    assert!(harness::attach_late(&target, &env).unwrap());
+    let admin = harness_root(&main).join("worktrees/x");
+    fs::remove_file(admin.join("index")).unwrap();
+    fs::write(admin.join(harness::ATTACH_PENDING), "").unwrap();
+    write(&target.join("CLAUDE.md"), "local");
+
+    assert!(harness::attach_late(&target, &env).unwrap());
+    assert!(harness::snapshot(&target, &env).unwrap());
+
+    assert!(admin.join("index").exists());
+    assert!(!admin.join(harness::ATTACH_PENDING).exists());
+    assert_eq!(
+        hgit(&sandbox, &target, &["show", "HEAD:CLAUDE.md"]),
+        "local"
+    );
+}
+
+#[test]
 fn late_attach_restores_paths_literally() {
     let sandbox = Sandbox::new();
     pushing(&sandbox);
