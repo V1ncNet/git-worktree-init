@@ -854,6 +854,30 @@ fn late_attach_keeps_existing_files() {
 }
 
 #[test]
+fn unfinished_late_attach_resumes_before_snapshot() {
+    let sandbox = Sandbox::new();
+    pushing(&sandbox);
+    let main = sandbox.root.join("proj");
+    let target = unattached(&sandbox, &main);
+    let env = env_of(&sandbox);
+    assert!(harness::attach_late(&target, &env).unwrap());
+    let head = hgit(&sandbox, &target, &["rev-parse", "HEAD"]);
+    let marker = harness_root(&main)
+        .join("worktrees/x")
+        .join(harness::ATTACH_PENDING);
+    fs::write(&marker, "").unwrap();
+    fs::remove_file(target.join("CLAUDE.md")).unwrap();
+    write(&target.join(".claude/h.md"), "handoff");
+
+    assert!(!harness::snapshot(&target, &env).unwrap());
+    assert!(harness::attach_late(&target, &env).unwrap());
+
+    assert_eq!(read(&target.join("CLAUDE.md")), "develop");
+    assert!(!marker.exists());
+    assert_eq!(hgit(&sandbox, &target, &["rev-parse", "HEAD"]), head);
+}
+
+#[test]
 fn late_attach_restores_paths_literally() {
     let sandbox = Sandbox::new();
     pushing(&sandbox);

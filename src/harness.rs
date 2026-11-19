@@ -12,6 +12,7 @@ pub const DEFAULT_BRANCH: &str = "develop";
 pub const REMOTE: &str = "harness";
 pub const ANCHOR: &str = "harness-anchor";
 pub const UNATTACHED: &str = "refs/heads/wt-unattached";
+pub const ATTACH_PENDING: &str = "wt-attach-pending";
 pub const SNAPSHOT_SUBJECT: &str = "Snapshot harness state";
 pub const NON_INTERACTIVE_SSH: &str = "ssh -o BatchMode=yes -o ConnectTimeout=10";
 pub const UPSTREAM: &str = "refs/remotes/origin/develop";
@@ -107,6 +108,11 @@ pub fn attach(target: &Path, branch: &str, env: &Env) -> Result<()> {
 }
 
 pub fn attach_late(target: &Path, env: &Env) -> Result<bool> {
+    let pending = pending(target, env)?;
+    if pending.exists() {
+        finish_attach(target, &pending, env)?;
+        return Ok(true);
+    }
     if index(target, env)?.exists() {
         return Ok(true);
     }
@@ -126,8 +132,9 @@ pub fn attach_late(target: &Path, env: &Env) -> Result<bool> {
     }
     release_unattached(target, env)?;
     git(target, &["symbolic-ref", "HEAD", &local], env)?;
+    fs::write(&pending, "")?;
     git(target, &["reset", "-q"], env)?;
-    restore_missing(target, env)?;
+    finish_attach(target, &pending, env)?;
     Ok(true)
 }
 
@@ -139,6 +146,11 @@ pub fn snapshot(target: &Path, env: &Env) -> Result<bool> {
     if index.with_file_name("MERGE_HEAD").exists() {
         let shown = target.display();
         eprintln!("worktree-init: harness merge is still open in {shown}, snapshot skipped");
+        return Ok(false);
+    }
+    if index.with_file_name(ATTACH_PENDING).exists() {
+        let shown = target.display();
+        eprintln!("worktree-init: harness attach is unfinished in {shown}, snapshot skipped");
         return Ok(false);
     }
     if every_file_missing(target, env)? {
@@ -379,6 +391,16 @@ fn add_hidden(target: &Path, env: &Env) -> Result<()> {
     let mut add = vec!["add", "-f", "--"];
     add.extend(paths);
     git(target, &add, env).map(drop)
+}
+
+fn pending(target: &Path, env: &Env) -> Result<PathBuf> {
+    Ok(index(target, env)?.with_file_name(ATTACH_PENDING))
+}
+
+fn finish_attach(target: &Path, pending: &Path, env: &Env) -> Result<()> {
+    restore_missing(target, env)?;
+    fs::remove_file(pending)?;
+    Ok(())
 }
 
 fn restore_missing(target: &Path, env: &Env) -> Result<()> {
