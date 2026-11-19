@@ -1,5 +1,5 @@
 use std::collections::{BTreeSet, HashSet};
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
@@ -13,6 +13,7 @@ pub const REMOTE: &str = "harness";
 pub const ANCHOR: &str = "harness-anchor";
 pub const UNATTACHED: &str = "refs/heads/wt-unattached";
 pub const ATTACH_PENDING: &str = "wt-attach-pending";
+pub const ATTACH_LOCK: &str = "attach.lock";
 pub const SNAPSHOT_SUBJECT: &str = "Snapshot harness state";
 pub const NON_INTERACTIVE_SSH: &str = "ssh -o BatchMode=yes -o ConnectTimeout=10";
 pub const UPSTREAM: &str = "refs/remotes/origin/develop";
@@ -98,6 +99,7 @@ pub fn attach(target: &Path, branch: &str, env: &Env) -> Result<()> {
         };
         git(target, &["branch", "--no-track", branch, &start], env)?;
     }
+    let _lock = attach_lock(target, env)?;
     release_unattached(target, env)?;
     let mut checkout = vec!["checkout", "-q"];
     if fresh {
@@ -130,10 +132,13 @@ pub fn attach_late(target: &Path, env: &Env) -> Result<bool> {
         };
         git(target, &["branch", "--no-track", branch, &start], env)?;
     }
-    release_unattached(target, env)?;
-    git(target, &["symbolic-ref", "HEAD", &local], env)?;
-    fs::write(&pending, "")?;
-    git(target, &["reset", "-q"], env)?;
+    {
+        let _lock = attach_lock(target, env)?;
+        release_unattached(target, env)?;
+        git(target, &["symbolic-ref", "HEAD", &local], env)?;
+        fs::write(&pending, "")?;
+        git(target, &["reset", "-q"], env)?;
+    }
     finish_attach(target, &pending, env)?;
     Ok(true)
 }
@@ -391,6 +396,13 @@ fn add_hidden(target: &Path, env: &Env) -> Result<()> {
     let mut add = vec!["add", "-f", "--"];
     add.extend(paths);
     git(target, &add, env).map(drop)
+}
+
+fn attach_lock(target: &Path, env: &Env) -> Result<File> {
+    let (_, common) = code_dirs(target, &gitenv::sanitized(env, &[]))?;
+    let handle = File::create(git_dir(&common).join(ATTACH_LOCK))?;
+    handle.lock()?;
+    Ok(handle)
 }
 
 fn pending(target: &Path, env: &Env) -> Result<PathBuf> {
