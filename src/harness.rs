@@ -83,15 +83,18 @@ pub fn default_branch(target: &Path, env: &Env) -> Result<String> {
     }
     let listing = [
         "for-each-ref",
-        "--format=%(refname:lstrip=-1)",
+        "--format=%(refname)",
         "refs/heads/main",
         "refs/heads/master",
         "refs/remotes/origin/main",
         "refs/remotes/origin/master",
     ];
-    let names = gitenv::git(target, &listing, &clean)?;
-    let only_master =
-        names.lines().any(|name| name == "master") && !names.lines().any(|name| name == "main");
+    let refs = gitenv::git(target, &listing, &clean)?;
+    let has = |name: &str| {
+        refs.lines()
+            .any(|line| line == format!("refs/heads/{name}") || line == upstream(name))
+    };
+    let only_master = has("master") && !has("main");
     Ok(if only_master { "master" } else { "main" }.to_string())
 }
 

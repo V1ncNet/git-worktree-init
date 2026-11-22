@@ -199,6 +199,8 @@ The harness uses the default branch of the code repository. Without configuratio
 git config worktree-init.defaultBranch develop
 ```
 
+Versions up to 0.2.1 created every harness on `develop`. Such a harness needs this key before the upgrade. So does any harness whose branch differs from the resolved one, for example a harness on `master` in a repository that later gained `main`.
+
 With the hook registered (see Install), the harness follows branch checkouts. A branch that exists in the harness, locally or on the remote `harness`, is resumed. A new one forks from the harness branch of its base: `branch.<name>.t3-merge-base`, else the upstream branch if it has another name, else the default branch. Before switching, uncommitted harness changes are committed as `Snapshot harness state`. A snapshot skips files ignored by a `.gitignore` inside the harness and `.DS_Store`, and it refuses to run when every harness file is missing, for example after `git clean -xfd`. A checkout that leaves HEAD detached, such as a rebase, changes nothing in the harness.
 
 A worktree created without a branch checkout, for example with `--no-checkout`, gets its harness on its first push or `git wt harness sync`. Missing harness files are restored, and existing ones are kept and snapshotted.

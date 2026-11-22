@@ -1620,6 +1620,22 @@ fn late_attach_and_merge_on(default: &str, configured: bool) {
 }
 
 #[test]
+fn nested_main_ref_does_not_hide_master() {
+    let sandbox = Sandbox::new();
+    let main = sandbox.repo();
+    git_ok(&sandbox, &main, &["branch", "-m", "master"]);
+    git_ok(
+        &sandbox,
+        &main,
+        &["update-ref", "refs/remotes/origin/main/main", "HEAD"],
+    );
+
+    let resolved = harness::default_branch(&main, &env_of(&sandbox)).unwrap();
+
+    assert_eq!(resolved, "master");
+}
+
+#[test]
 fn main_repository_needs_no_configuration() {
     late_attach_and_merge_on("main", false);
 }
