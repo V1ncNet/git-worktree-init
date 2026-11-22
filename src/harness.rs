@@ -308,12 +308,11 @@ pub fn feature_paths(main: &Path, default: &str, branch: &str, env: &Env) -> Res
     Ok(paths.into_iter().collect())
 }
 
-pub fn merge(main: &Path, branch: &str, env: &Env) -> Result<bool> {
+pub fn merge(main: &Path, default: &str, branch: &str, env: &Env) -> Result<bool> {
     let (_, common) = code_dirs(main, &gitenv::sanitized(env, &[]))?;
-    let default = default_branch(main, env)?;
     let merged = {
         let _lock = engine::locked(&common)?;
-        merge_locked(main, &default, branch, &git_dir(&common), env)?
+        merge_locked(main, default, branch, &git_dir(&common), env)?
     };
     if merged {
         eprintln!("worktree-init: merged harness branch {branch} into {default}");

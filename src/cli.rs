@@ -382,7 +382,10 @@ fn harness_merge(branch: &str, env: &Env) -> i32 {
     let merged = std::env::current_dir()
         .map_err(Error::from)
         .and_then(|cwd| worktrees::discover(&cwd, &gitenv::sanitized(env, &[])))
-        .and_then(|repo| harness::merge(&repo.main, branch, env));
+        .and_then(|repo| {
+            let default = harness::default_branch(&repo.main, env)?;
+            harness::merge(&repo.main, &default, branch, env)
+        });
     harness_exit(merged)
 }
 
@@ -518,7 +521,7 @@ fn run_harness_event(event: HarnessEvent, cwd: &Path, env: &Env) -> Result<()> {
                 return Ok(());
             }
             for branch in harness::submitted(&main, &default, env)? {
-                harness::merge(&main, &branch, env)?;
+                harness::merge(&main, &default, &branch, env)?;
             }
         }
     }
