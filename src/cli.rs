@@ -396,11 +396,10 @@ fn harness_exit(outcome: Result<bool>) -> i32 {
     }
 }
 
-#[derive(Clone, Copy)]
 enum HarnessEvent {
     PostCheckout,
     PrePush,
-    ReferenceTransaction,
+    ReferenceTransaction(Vec<String>),
 }
 
 impl HarnessEvent {
@@ -408,16 +407,16 @@ impl HarnessEvent {
         match count {
             3 => Some(HarnessEvent::PostCheckout),
             2 => Some(HarnessEvent::PrePush),
-            1 => Some(HarnessEvent::ReferenceTransaction),
+            1 => Some(HarnessEvent::ReferenceTransaction(Vec::new())),
             _ => None,
         }
     }
 
-    fn name(self) -> &'static str {
+    fn name(&self) -> &'static str {
         match self {
             HarnessEvent::PostCheckout => "post-checkout",
             HarnessEvent::PrePush => "pre-push",
-            HarnessEvent::ReferenceTransaction => "reference-transaction",
+            HarnessEvent::ReferenceTransaction(_) => "reference-transaction",
         }
     }
 }
@@ -426,7 +425,7 @@ fn guarded_harness_hook(args: &[String]) -> i32 {
     let outcome =
         panic::catch_unwind(|| harness_hook(args, &gitenv::process_env(), std::io::stdin().lock()));
     if outcome.is_err() {
-        let event = HarnessEvent::of_count(args.len()).map_or("git", HarnessEvent::name);
+        let event = HarnessEvent::of_count(args.len()).map_or("git", |event| event.name());
         let _ = writeln!(
             std::io::stderr(),
             "worktree-init: harness hook failed, {event} continues"
@@ -461,26 +460,33 @@ fn inside_harness_operation(env: &Env) -> bool {
 }
 
 fn hook_event(args: &[String], stdin: impl BufRead) -> Option<HarnessEvent> {
-    let event = HarnessEvent::of_count(args.len())?;
-    let wanted = match event {
-        HarnessEvent::PostCheckout => args[2] == "1",
-        HarnessEvent::PrePush => true,
-        HarnessEvent::ReferenceTransaction => args[0] == "committed" && moves_upstream(stdin),
-    };
-    wanted.then_some(event)
+    match HarnessEvent::of_count(args.len())? {
+        HarnessEvent::PostCheckout => (args[2] == "1").then_some(HarnessEvent::PostCheckout),
+        HarnessEvent::PrePush => Some(HarnessEvent::PrePush),
+        HarnessEvent::ReferenceTransaction(_) => {
+            if args[0] != "committed" {
+                return None;
+            }
+            let moved = moved_origin_refs(stdin);
+            (!moved.is_empty()).then_some(HarnessEvent::ReferenceTransaction(moved))
+        }
+    }
 }
 
-fn moves_upstream(stdin: impl BufRead) -> bool {
+fn moved_origin_refs(stdin: impl BufRead) -> Vec<String> {
     stdin
         .split(b'\n')
         .map_while(std::io::Result::ok)
-        .filter(|line| names_upstream(line))
-        .count()
-        > 0
+        .filter_map(|line| origin_ref(&line))
+        .collect()
 }
 
-fn names_upstream(line: &[u8]) -> bool {
-    String::from_utf8_lossy(line).split_whitespace().nth(2) == Some(harness::UPSTREAM)
+fn origin_ref(line: &[u8]) -> Option<String> {
+    let line = String::from_utf8_lossy(line);
+    let reference = line.split_whitespace().nth(2)?;
+    reference
+        .starts_with(harness::upstream("").as_str())
+        .then(|| reference.to_string())
 }
 
 fn has_harness(cwd: &Path, clean: &Env) -> bool {
@@ -505,9 +511,13 @@ fn run_harness_event(event: HarnessEvent, cwd: &Path, env: &Env) -> Result<()> {
                 harness::push(&target, env)?;
             }
         }
-        HarnessEvent::ReferenceTransaction => {
+        HarnessEvent::ReferenceTransaction(moved) => {
             let main = worktrees::discover(&target, &clean)?.main;
-            for branch in harness::submitted(&main, env)? {
+            let default = harness::default_branch(&main, env)?;
+            if !moved.contains(&harness::upstream(&default)) {
+                return Ok(());
+            }
+            for branch in harness::submitted(&main, &default, env)? {
                 harness::merge(&main, &branch, env)?;
             }
         }

@@ -73,6 +73,11 @@ fn code(sandbox: &Sandbox) -> PathBuf {
     content.push_str("CLAUDE.md\n.claude/\n.superpowers/\ndocs/superpowers/\n");
     content.push_str(RUNTIME_BLOCK);
     fs::write(&exclude, content).unwrap();
+    git_ok(
+        sandbox,
+        &repo,
+        &["config", harness::DEFAULT_BRANCH_KEY, "develop"],
+    );
     repo
 }
 
@@ -1265,13 +1270,17 @@ fn feature(sandbox: &Sandbox, main: &Path, branch: &str, own_commit: bool) -> Pa
 }
 
 fn submit(sandbox: &Sandbox, main: &Path, origin: &Path, branch: &str) {
+    submit_to(sandbox, main, origin, branch, "develop");
+}
+
+fn submit_to(sandbox: &Sandbox, main: &Path, origin: &Path, branch: &str, base: &str) {
     let clone = sandbox
         .root
         .join(format!("submit-{}", branch.replace('/', "-")));
     git_ok(
         sandbox,
         &sandbox.root,
-        &["clone", "-q", "-b", "develop", path(origin), path(&clone)],
+        &["clone", "-q", "-b", base, path(origin), path(&clone)],
     );
     git_ok(
         sandbox,
@@ -1290,7 +1299,7 @@ fn submit(sandbox: &Sandbox, main: &Path, origin: &Path, branch: &str) {
             branch,
         ],
     );
-    git_ok(sandbox, &clone, &["push", "-q", "origin", "develop"]);
+    git_ok(sandbox, &clone, &["push", "-q", "origin", base]);
 }
 
 fn advance(sandbox: &Sandbox, origin: &Path, name: &str) {
@@ -1322,7 +1331,11 @@ fn develop_files(sandbox: &Sandbox, main: &Path) -> BTreeSet<String> {
 }
 
 fn merges(sandbox: &Sandbox, main: &Path) -> Vec<String> {
-    hgit(sandbox, main, &["rev-list", "--merges", "develop"])
+    merges_into(sandbox, main, "develop")
+}
+
+fn merges_into(sandbox: &Sandbox, main: &Path, base: &str) -> Vec<String> {
+    hgit(sandbox, main, &["rev-list", "--merges", base])
         .split_whitespace()
         .map(str::to_string)
         .collect()
@@ -1524,6 +1537,7 @@ fn harness_hook_ignores_unrelated_reference_transactions() {
     for (state, reference) in [
         ("prepared", "refs/remotes/origin/develop"),
         ("committed", "refs/heads/main"),
+        ("committed", "refs/remotes/origin/feature/foo"),
     ] {
         run_harness_hook(&sandbox, &main, &[state], &line(reference), &[]);
         assert!(merges(&sandbox, &main).is_empty(), "{state} {reference}");
@@ -1533,6 +1547,91 @@ fn harness_hook_ignores_unrelated_reference_transactions() {
 
     assert_eq!(result.status.code(), Some(0));
     assert_eq!(merges(&sandbox, &main).len(), 1);
+}
+
+fn on_default_branch(sandbox: &Sandbox, default: &str, configured: bool) -> (PathBuf, PathBuf) {
+    let main = sandbox.repo();
+    if default == "master" {
+        git_ok(sandbox, &main, &["branch", "-m", "master"]);
+    }
+    if configured {
+        git_ok(
+            sandbox,
+            &main,
+            &["config", harness::DEFAULT_BRANCH_KEY, default],
+        );
+    }
+    let origin = sandbox.root.join("origin.git");
+    let remote = sandbox.root.join("harness-remote.git");
+    for bare in [&origin, &remote] {
+        git_ok(
+            sandbox,
+            &sandbox.root,
+            &["init", "-q", "--bare", path(bare)],
+        );
+    }
+    git_ok(sandbox, &main, &["remote", "add", "origin", path(&origin)]);
+    git_ok(
+        sandbox,
+        &main,
+        &["push", "-q", "origin", &format!("HEAD:{default}")],
+    );
+    git_ok(sandbox, &main, &["fetch", "-q", "origin"]);
+    let env = env_of(sandbox);
+    harness::init(&main, path(&remote), &env).unwrap();
+    assert_eq!(harness::default_branch(&main, &env).unwrap(), default);
+    write(&main.join("CLAUDE.md"), default);
+    hgit(sandbox, &main, &["add", "-f", "CLAUDE.md"]);
+    hgit(sandbox, &main, &["commit", "-q", "-m", "Seed"]);
+    let events = ["post-checkout", "pre-push", "reference-transaction"];
+    register_harness_hook(sandbox, &main, wt_bin(), &events);
+    (main, origin)
+}
+
+fn late_attach_and_merge_on(default: &str, configured: bool) {
+    let sandbox = Sandbox::new();
+    let (main, origin) = on_default_branch(&sandbox, default, configured);
+    let target = unattached(&sandbox, &main);
+    fs::write(target.join("x.txt"), "x").unwrap();
+    git_ok(&sandbox, &target, &["add", "x.txt"]);
+    git_ok(&sandbox, &target, &["commit", "-q", "-m", "Work on x"]);
+    write(&target.join(".claude/notes-x.md"), "feature");
+
+    let pushed = sandbox.git(&target, &["push", "-q", "origin", "feature/x"]);
+
+    assert!(pushed.status.success(), "{}", text(&pushed.stderr));
+    let remote = sandbox.root.join("harness-remote.git");
+    assert_eq!(
+        git_ok(&sandbox, &remote, &["show", "feature/x:CLAUDE.md"]),
+        default
+    );
+    assert_eq!(
+        git_ok(&sandbox, &remote, &["show", "feature/x:.claude/notes-x.md"]),
+        "feature"
+    );
+    remove(&sandbox, &main, &target);
+    submit_to(&sandbox, &main, &origin, "feature/x", default);
+
+    let fetched = sandbox.git(&main, &["fetch", "-q", "origin"]);
+
+    assert!(fetched.status.success(), "{}", text(&fetched.stderr));
+    assert_eq!(merges_into(&sandbox, &main, default).len(), 1);
+    assert_eq!(read(&main.join(".claude/notes-x.md")), "feature");
+}
+
+#[test]
+fn main_repository_needs_no_configuration() {
+    late_attach_and_merge_on("main", false);
+}
+
+#[test]
+fn master_repository_needs_no_configuration() {
+    late_attach_and_merge_on("master", false);
+}
+
+#[test]
+fn develop_repository_uses_configured_default_branch() {
+    late_attach_and_merge_on("develop", true);
 }
 
 const README: &str = include_str!("../README.md");

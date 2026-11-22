@@ -193,13 +193,19 @@ git wt harness init --remote <url>
 
 This adds the remote `harness`, writes the allowlist to `harness.git/info/exclude` and turns signing, the global hooks and the global excludes file off for harness operations. The lines of a `# claude-code-runtime` block in `.git/info/exclude` are excluded as well.
 
-With the hook registered (see Install), the harness follows branch checkouts. A branch that exists in the harness, locally or on the remote `harness`, is resumed. A new one forks from the harness branch of its base: `branch.<name>.t3-merge-base`, else the upstream branch if it has another name, else `develop`. Before switching, uncommitted harness changes are committed as `Snapshot harness state`. A snapshot skips files ignored by a `.gitignore` inside the harness and `.DS_Store`, and it refuses to run when every harness file is missing, for example after `git clean -xfd`. A checkout that leaves HEAD detached, such as a rebase, changes nothing in the harness.
+The harness uses the default branch of the code repository. Without configuration that is `master` if the code repository has `master` but no `main`, locally or on `origin`, and `main` otherwise. Set any other default branch, such as `develop`, before `git wt harness init`:
+
+```sh
+git config worktree-init.defaultBranch develop
+```
+
+With the hook registered (see Install), the harness follows branch checkouts. A branch that exists in the harness, locally or on the remote `harness`, is resumed. A new one forks from the harness branch of its base: `branch.<name>.t3-merge-base`, else the upstream branch if it has another name, else the default branch. Before switching, uncommitted harness changes are committed as `Snapshot harness state`. A snapshot skips files ignored by a `.gitignore` inside the harness and `.DS_Store`, and it refuses to run when every harness file is missing, for example after `git clean -xfd`. A checkout that leaves HEAD detached, such as a rebase, changes nothing in the harness.
 
 A worktree created without a branch checkout, for example with `--no-checkout`, gets its harness on its first push or `git wt harness sync`. Missing harness files are restored, and existing ones are kept and snapshotted.
 
 Every `git push` takes a snapshot and pushes the current harness branch to `harness`, never with `--force`. Harness fetch and push use ssh in batch mode with a ten second connect timeout unless `GIT_SSH_COMMAND` is set, so a missing network or a locked key fails fast instead of hanging. If that fails, a warning `worktree-init: harness push failed: <reason>` appears and the code push continues. `git wt harness sync` does the same by hand and exits with 1 if the push fails.
 
-When a fetch moves `origin/develop`, every submitted feature is merged into the harness `develop` of the main worktree with `--no-ff`. A feature counts as submitted when its code branch tip is contained in `origin/develop` but is not on its first-parent chain, its code branch is checked out in no worktree, and its harness branch has commits that harness `develop` lacks. The merge drops the ledgers under `.superpowers/sdd/` and the handoffs under `.claude/handoffs/` that the feature added. A conflict stops the merge in the main worktree, and no further merge or snapshot happens there until it is resolved. `git wt harness merge <branch>` merges a harness branch by hand without these checks, for example for a fix pushed directly to `develop`. Never run `git worktree` against `harness.git`, because `remove` and `move` would act on the Git directory of a code worktree.
+When a fetch moves `origin/<default>`, every submitted feature is merged into the harness `<default>` of the main worktree with `--no-ff`. `<default>` stands for the default branch. A feature counts as submitted when its code branch tip is contained in `origin/<default>` but is not on its first-parent chain, its code branch is checked out in no worktree, and its harness branch has commits that harness `<default>` lacks. The merge drops the ledgers under `.superpowers/sdd/` and the handoffs under `.claude/handoffs/` that the feature added. A conflict stops the merge in the main worktree, and no further merge or snapshot happens there until it is resolved. `git wt harness merge <branch>` merges a harness branch by hand without these checks, for example for a fix pushed directly to the default branch. Never run `git worktree` against `harness.git`, because `remove` and `move` would act on the Git directory of a code worktree.
 
 ## Configuration keys
 
@@ -213,6 +219,7 @@ All keys live under `worktree-init.`.
 | `ignorePaths` | Glob patterns for worktree paths to skip. Multi-valued, default `*/.claude/worktrees/*`, an empty value adds no pattern |
 | `interactive` | `false` switches the prompts off |
 | `localInclude` | Path relative to the worktree root, copied once from the main worktree. Multi-valued |
+| `defaultBranch` | Default branch of the harness and of `origin`. Default `main`, or `master` if only that exists |
 
 Plus one key per option, for example `slot` or `source`.
 
