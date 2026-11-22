@@ -8,7 +8,7 @@ use crate::error::{Error, Result};
 use crate::gitenv::{self, Env};
 use crate::worktrees;
 
-pub const DEFAULT_BRANCH: &str = "develop";
+pub const DEFAULT_BRANCH_KEY: &str = "worktree-init.defaultBranch";
 pub const REMOTE: &str = "harness";
 pub const ANCHOR: &str = "harness-anchor";
 pub const UNATTACHED: &str = "refs/heads/wt-unattached";
@@ -16,7 +16,6 @@ pub const ATTACH_PENDING: &str = "wt-attach-pending";
 pub const ATTACH_LOCK: &str = "attach.lock";
 pub const SNAPSHOT_SUBJECT: &str = "Snapshot harness state";
 pub const NON_INTERACTIVE_SSH: &str = "ssh -o BatchMode=yes -o ConnectTimeout=10";
-pub const UPSTREAM: &str = "refs/remotes/origin/develop";
 pub const FEATURE_DIRS: [&str; 2] = [".superpowers/sdd/", ".claude/handoffs/"];
 pub const RUNTIME_MARKER: &str = "# claude-code-runtime";
 pub const ALLOWLIST: [&str; 10] = [
@@ -62,7 +61,8 @@ pub fn init(main: &Path, remote: &str, env: &Env) -> Result<()> {
     let (_, common) = code_dirs(main, &clean)?;
     let root = git_dir(&common);
     let root_arg = root.to_string_lossy();
-    let create = ["init", "-q", "--bare", "-b", DEFAULT_BRANCH, &root_arg];
+    let branch = default_branch(main, &clean)?;
+    let create = ["init", "-q", "--bare", "-b", &branch, &root_arg];
     gitenv::git(main, &create, &clean)?;
     gitenv::git(&root, &["remote", "add", REMOTE, remote], &clean)?;
     for (key, value) in OVERRIDES {
@@ -73,6 +73,33 @@ pub fn init(main: &Path, remote: &str, env: &Env) -> Result<()> {
     fs::create_dir_all(root.join("info"))?;
     fs::write(root.join("info").join("exclude"), lines.join("\n") + "\n")?;
     Ok(())
+}
+
+pub fn default_branch(target: &Path, env: &Env) -> Result<String> {
+    let clean = gitenv::sanitized(env, &[]);
+    let configured = config(target, DEFAULT_BRANCH_KEY, &clean)?;
+    if !configured.is_empty() {
+        return Ok(configured);
+    }
+    let listing = [
+        "for-each-ref",
+        "--format=%(refname)",
+        "refs/heads/main",
+        "refs/heads/master",
+        "refs/remotes/origin/main",
+        "refs/remotes/origin/master",
+    ];
+    let refs = gitenv::git(target, &listing, &clean)?;
+    let has = |name: &str| {
+        refs.lines()
+            .any(|line| line == format!("refs/heads/{name}") || line == upstream(name))
+    };
+    let only_master = has("master") && !has("main");
+    Ok(if only_master { "master" } else { "main" }.to_string())
+}
+
+pub fn upstream(branch: &str) -> String {
+    format!("refs/remotes/origin/{branch}")
 }
 
 pub fn base_of(target: &Path, branch: &str, env: &Env) -> Result<String> {
@@ -86,7 +113,7 @@ pub fn base_of(target: &Path, branch: &str, env: &Env) -> Result<String> {
     if !upstream.is_empty() && upstream != branch {
         return Ok(upstream.to_string());
     }
-    Ok(DEFAULT_BRANCH.to_string())
+    default_branch(target, &clean)
 }
 
 pub fn attach(target: &Path, branch: &str, env: &Env) -> Result<()> {
@@ -212,9 +239,9 @@ pub fn push(target: &Path, env: &Env) -> Result<bool> {
     }
 }
 
-pub fn submitted(main: &Path, env: &Env) -> Result<Vec<String>> {
+pub fn submitted(main: &Path, default: &str, env: &Env) -> Result<Vec<String>> {
     let clean = gitenv::sanitized(env, &[]);
-    let upstream = verified(main, UPSTREAM, &clean)?;
+    let upstream = verified(main, &upstream(default), &clean)?;
     if upstream.is_empty() {
         return Ok(Vec::new());
     }
@@ -228,7 +255,7 @@ pub fn submitted(main: &Path, env: &Env) -> Result<Vec<String>> {
     )?;
     let mut result = Vec::new();
     for branch in heads.split_whitespace() {
-        if branch == DEFAULT_BRANCH || busy.contains(branch) {
+        if branch == default || busy.contains(branch) {
             continue;
         }
         let tip = verified(main, &format!("refs/heads/{branch}^{{commit}}"), &clean)?;
@@ -238,15 +265,15 @@ pub fn submitted(main: &Path, env: &Env) -> Result<Vec<String>> {
         {
             continue;
         }
-        if has_own_commits(main, branch, env)? {
+        if has_own_commits(main, default, branch, env)? {
             result.push(branch.to_string());
         }
     }
     Ok(result)
 }
 
-pub fn feature_paths(main: &Path, branch: &str, env: &Env) -> Result<Vec<String>> {
-    let base = git(main, &["merge-base", DEFAULT_BRANCH, branch], env)?;
+pub fn feature_paths(main: &Path, default: &str, branch: &str, env: &Env) -> Result<Vec<String>> {
+    let base = git(main, &["merge-base", default, branch], env)?;
     let base = base.trim();
     let mut diff = vec![
         "diff",
@@ -281,19 +308,19 @@ pub fn feature_paths(main: &Path, branch: &str, env: &Env) -> Result<Vec<String>
     Ok(paths.into_iter().collect())
 }
 
-pub fn merge(main: &Path, branch: &str, env: &Env) -> Result<bool> {
+pub fn merge(main: &Path, default: &str, branch: &str, env: &Env) -> Result<bool> {
     let (_, common) = code_dirs(main, &gitenv::sanitized(env, &[]))?;
     let merged = {
         let _lock = engine::locked(&common)?;
-        merge_locked(main, branch, &git_dir(&common), env)?
+        merge_locked(main, default, branch, &git_dir(&common), env)?
     };
     if merged {
-        eprintln!("worktree-init: merged harness branch {branch} into {DEFAULT_BRANCH}");
+        eprintln!("worktree-init: merged harness branch {branch} into {default}");
     }
     Ok(merged)
 }
 
-fn merge_locked(main: &Path, branch: &str, root: &Path, env: &Env) -> Result<bool> {
+fn merge_locked(main: &Path, default: &str, branch: &str, root: &Path, env: &Env) -> Result<bool> {
     let shown = main.display();
     if root.join("MERGE_HEAD").exists() {
         eprintln!(
@@ -302,7 +329,7 @@ fn merge_locked(main: &Path, branch: &str, root: &Path, env: &Env) -> Result<boo
         return Ok(false);
     }
     let current = current_branch(main, env)?;
-    if current != DEFAULT_BRANCH {
+    if current != default {
         let on = if current.is_empty() {
             "a detached HEAD"
         } else {
@@ -311,7 +338,7 @@ fn merge_locked(main: &Path, branch: &str, root: &Path, env: &Env) -> Result<boo
         eprintln!("worktree-init: harness of {shown} is on {on}, not merging {branch}");
         return Ok(false);
     }
-    let paths = feature_paths(main, branch, env)?;
+    let paths = feature_paths(main, default, branch, env)?;
     match git(
         main,
         &["merge", "-q", "--no-ff", "--no-commit", branch],
@@ -341,8 +368,8 @@ fn merge_locked(main: &Path, branch: &str, root: &Path, env: &Env) -> Result<boo
     Ok(true)
 }
 
-fn has_own_commits(main: &Path, branch: &str, env: &Env) -> Result<bool> {
-    let range = format!("{DEFAULT_BRANCH}..{branch}");
+fn has_own_commits(main: &Path, default: &str, branch: &str, env: &Env) -> Result<bool> {
+    let range = format!("{default}..{branch}");
     Ok(!git(main, &["rev-list", "-1", &range], env)?
         .trim()
         .is_empty())
@@ -474,7 +501,7 @@ fn start_point(target: &Path, branch: &str, env: &Env) -> Result<Option<String>>
         return Ok(Some(fetched));
     }
     let mut refs = candidates(&base_of(target, branch, env)?).to_vec();
-    refs.extend(candidates(DEFAULT_BRANCH));
+    refs.extend(candidates(&default_branch(target, env)?));
     first_existing(target, &refs, env)
 }
 
